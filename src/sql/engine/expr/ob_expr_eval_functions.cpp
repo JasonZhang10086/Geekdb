@@ -1539,6 +1539,19 @@ static ObExpr::EvalBatchFunc g_expr_eval_batch_functions[] = {
   NULL, // ObExprArrayReplace::eval_array_replace_batch,              /* 176 */
   NULL, // ObExprArrayPopfront::eval_array_popfront_batch,            /* 177 */
   NULL, // ObExprUDF::eval_udf_batch                                  /* 178 */
+  ObExprVecIVFCenterID::calc_center_id_batch_cpu,                     /* 179 */
+  ObExprVectorL2Distance::calc_l2_distance_batch_cpu,                 /* 180 */
+  ObExprVectorCosineDistance::calc_cosine_distance_batch_cpu,         /* 181 */
+#ifdef __APPLE__
+  ObExprVecIVFCenterID::calc_center_id_batch_metal,                    /* 182 */
+  ObExprVectorL2Distance::calc_l2_distance_batch_metal,               /* 183 */
+  ObExprVectorCosineDistance::calc_cosine_distance_batch_metal,         /* 184 */
+#else
+  NULL, // ObExprVecIVFCenterID::calc_center_id_batch_metal                    /* 182 */
+  NULL, // ObExprVectorL2Distance::calc_l2_distance_batch_metal               /* 183 */
+  NULL, // ObExprVectorCosineDistance::calc_cosine_distance_batch_metal         /* 184 */
+#endif  
+  
 };
 
 static ObExpr::EvalVectorFunc g_expr_eval_vector_functions[] = {
@@ -1772,6 +1785,19 @@ static ObExpr::EvalVectorFunc g_expr_eval_vector_functions[] = {
   ObExprAIComplete::eval_ai_complete_vector,                             /* 227 */
   ObExprAIEmbed::eval_ai_embed_vector,                                   /* 228 */
   NULL, // ObExprAIRerank::eval_ai_rerank_vector,                        /* 229 */
+  ObExprVecIVFCenterID::calc_center_id_vector_cpu,                       /* 230 */
+  ObExprVectorL2Distance::calc_l2_distance_vector_cpu,                   /* 231 */
+  ObExprVectorCosineDistance::calc_cosine_distance_vector_cpu,           /* 232 */
+#ifdef __APPLE__
+  ObExprVecIVFCenterID::calc_center_id_vector_metal,                     /* 233 */
+  ObExprVectorL2Distance::calc_l2_distance_vector_metal,                 /* 234 */
+  ObExprVectorCosineDistance::calc_cosine_distance_vector_metal,         /* 235 */
+#else
+  NULL, // ObExprVecIVFCenterID::calc_center_id_vector_metal,                     /* 233 */
+  NULL, // ObExprVectorL2Distance::calc_l2_distance_vector_metal,                 /* 234 */
+  NULL, // ObExprVectorCosineDistance::calc_cosine_distance_vector_metal,         /* 235 */
+#endif
+
 };
 
 REG_SER_FUNC_ARRAY(OB_SFA_SQL_EXPR_EVAL,

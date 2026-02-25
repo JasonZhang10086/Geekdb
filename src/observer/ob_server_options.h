@@ -40,7 +40,7 @@ public:
 public:
   int     port_        = 0;
   int8_t  log_level_   = 0;
-  bool    nodaemon_    = false;
+  bool    nodaemon_    = true;   // default: run in foreground (nodaemon)
   bool    use_ipv6_    = false;
   bool    embed_mode_  = false;
   bool    initialize_  = false; // TODO wangyunlai.wyl remove me before 2025-12-01

@@ -6068,7 +6068,6 @@ public:
   inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(837); }
 };
 
-
 class ObSysVarFactory
 {
 public:

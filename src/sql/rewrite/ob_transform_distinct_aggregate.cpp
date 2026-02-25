@@ -20,6 +20,7 @@
 #include "sql/resolver/expr/ob_raw_expr_util.h"
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "sql/rewrite/ob_expand_aggregate_utils.h"
+#include "common/object/ob_obj_type.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -71,6 +72,8 @@ int ObTransformDistinctAggregate::check_transform_validity(const ObDMLStmt *stmt
   int ret = OB_SUCCESS;
   const ObSelectStmt *select_stmt = NULL;
   ObSEArray<ObRawExpr*, 4> distinct_exprs;
+  int64_t num_distinct_aggr = 0;
+  int64_t num_non_distinct_aggr = 0;
   ObStmtExprReplacer replacer; // to extract shared expr in param expr of distinct agg funcs
   replacer.set_relation_scope();
   is_valid = true;
@@ -101,6 +104,7 @@ int ObTransformDistinctAggregate::check_transform_validity(const ObDMLStmt *stmt
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("agg expr is null", K(ret), K(i));
     } else if (aggr_expr->is_param_distinct()) {
+      num_distinct_aggr++;
       if (1 > aggr_expr->get_real_param_count()
           || (1 < aggr_expr->get_real_param_count()
               && T_FUN_COUNT != aggr_expr->get_expr_type()
@@ -146,16 +150,52 @@ int ObTransformDistinctAggregate::check_transform_validity(const ObDMLStmt *stmt
           OPT_TRACE("can not do transform, stmt has aggregate functions with different distinct columns");
         }
       }
-    } else if (OB_FAIL(ObOptimizerUtil::check_aggr_can_pre_aggregate(aggr_expr, is_valid))) {
-      LOG_WARN("failed to check aggr can pre aggregate", K(ret), KPC(aggr_expr));
-    } else if (!is_valid) {
-      OPT_TRACE("can not do transform, stmt has aggregate function that can not pre aggregate");
+    } else {
+      num_non_distinct_aggr++;
+      if (OB_FAIL(ObOptimizerUtil::check_aggr_can_pre_aggregate(aggr_expr, is_valid))) {
+        LOG_WARN("failed to check aggr can pre aggregate", K(ret), KPC(aggr_expr));
+      } else if (!is_valid) {
+        OPT_TRACE("can not do transform, stmt has aggregate function that can not pre aggregate");
+      }
     }
   }
   if (OB_SUCC(ret) && is_valid && distinct_exprs.empty()) {
     is_valid = false;
     OPT_TRACE("do not need to transform, stmt has no distinct aggregate function");
   }
+#ifdef __APPLE__
+  // 仅 Apple（Metal GPU）上：单纯 COUNT(DISTINCT col) 且 col 为 int/double/string 时不改写，保留 GPU 路径
+  if (OB_SUCC(ret) && is_valid && num_non_distinct_aggr == 0 && num_distinct_aggr > 0) {
+    bool all_pure_gpu_count_distinct = true;
+    for (int64_t i = 0; all_pure_gpu_count_distinct && i < select_stmt->get_aggr_item_size(); ++i) {
+      const ObAggFunRawExpr *aggr_expr = select_stmt->get_aggr_item(i);
+      if (OB_ISNULL(aggr_expr) || !aggr_expr->is_param_distinct()) {
+        all_pure_gpu_count_distinct = false;
+        break;
+      }
+      if (aggr_expr->get_expr_type() != T_FUN_COUNT || aggr_expr->get_real_param_count() != 1) {
+        all_pure_gpu_count_distinct = false;
+        break;
+      }
+      ObRawExpr *param_expr = aggr_expr->get_real_param_exprs().at(0);
+      if (OB_ISNULL(param_expr)) {
+        all_pure_gpu_count_distinct = false;
+        break;
+      }
+      common::ObObjType param_type = param_expr->get_result_type().get_type();
+      if (!(common::ob_is_int_tc(param_type) || common::ob_is_uint_tc(param_type)
+            || common::ob_is_double_type(param_type) || common::ob_is_float_type(param_type)
+            || common::ob_is_string_tc(param_type))) {
+        all_pure_gpu_count_distinct = false;
+        break;
+      }
+    }
+    if (all_pure_gpu_count_distinct) {
+      is_valid = false;
+      OPT_TRACE("do not rewrite pure count distinct (int/double/string) for GPU path");
+    }
+  }
+#endif
   if (OB_SUCC(ret) && is_valid) {
     // replace the same exprs in distinct agg funcs with shared exprs
     for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_aggr_item_size(); ++i) {

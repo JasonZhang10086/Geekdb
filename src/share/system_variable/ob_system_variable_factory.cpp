@@ -11675,7 +11675,6 @@ int ObSysVarFactory::create_all_sys_vars()
         ptr = (void *)((char *)ptr + sizeof(ObSysVarObSparseDropRatioSearch));
       }
     }
-
   }
   return ret;
 }
@@ -20903,7 +20902,6 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, ObSysVarClassType 
       }
       break;
     }
-
     default: {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("invalid system variable id", K(ret), K(sys_var_id));

@@ -29,6 +29,7 @@
 #include "share/ob_server_struct.h"
 #include "share/ob_share_util.h"
 #include "common/ob_timeout_ctx.h"
+#include "lib/vector/ob_vector_util.h"
 
 namespace oceanbase
 {
@@ -3540,7 +3541,8 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(float *vector,
                                                 int64_t count,
                                                 const float *&distance,
                                                 bool is_snap,
-                                                uint32_t sparse_byte_len)
+                                                uint32_t sparse_byte_len,
+                                                bool use_gpu_acc)
 {
   INIT_SUCC(ret);
   void *index = is_snap ? get_snap_index() : get_incr_index();
@@ -3564,6 +3566,7 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(float *vector,
                                             vids, count, distance);
       }
     } else {
+      // HNSW/vsag path: always use CPU (GPU acceleration for L2 is in ob_expr_vector, not here)
       ret = obvectorutil::cal_distance_by_id(is_snap ? get_snap_index() : get_incr_index(),
                                             vector,
                                             vids, count, distance);

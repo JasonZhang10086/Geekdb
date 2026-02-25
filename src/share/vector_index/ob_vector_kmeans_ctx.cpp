@@ -19,6 +19,9 @@
 #include "lib/container/ob_array_array.h"
 #include "share/vector_index/ob_plugin_vector_index_service.h"
 #include "storage/ddl/ob_direct_load_struct.h"
+#ifdef __APPLE__
+#include "gpu_acc/metal/vector/ob_metal_l2.h"
+#endif
 
 namespace oceanbase {
 using namespace common;
@@ -39,7 +42,7 @@ int ObKmeansCtx::init(
     const int64_t dim,
     ObVectorIndexDistAlgorithm dist_algo,
     ObVectorNormalizeInfo *norm_info,
-    int64_t pq_m)
+    const int64_t pq_m)
 {
   int ret = OB_SUCCESS;
   if (OB_INVALID_ID == tenant_id || 0 >= lists || 0 >= samples_per_nlist || 0 >= dim || VIDA_MAX <= dist_algo
@@ -202,7 +205,6 @@ int ObKmeansAlgo::inner_build(const ObIArray<float*> &input_vectors)
       break;
     }
     case FINISH: {
-      LOG_INFO("finish kmeans build", K(ret));
       break;
     }
     default: {
@@ -277,62 +279,130 @@ int ObKmeansAlgo::init_first_center(const ObIArray<float *> &input_vectors)
 int ObKmeansAlgo::init_centers(const ObIArray<float*> &input_vectors)
 {
   int ret = OB_SUCCESS;
-  
   if (INIT_CENTERS != status_) {
     ret = OB_STATE_NOT_MATCH;
     SHARE_LOG(WARN, "status not match", K(ret), K(status_));
-  } else {
-    int64_t center_idx = centers_[cur_idx_].count() - 1;
-    float *current_center = centers_[cur_idx_].at(center_idx);
-
-    float distance = 0;
-    bool is_finish = kmeans_ctx_->lists_ == centers_[cur_idx_].count();
-    float sum = 0;
-    float random_weight = 0;
-
-    const int64_t sample_cnt = input_vectors.count();
-
-    if (is_finish) {
-      status_ = RUNNING_KMEANS;
-      const int64_t center_count = centers_[cur_idx_].count();
-      const int64_t sample_count = input_vectors.count();
-      SHARE_LOG(INFO, "success to init all centers", K(ret), K(center_count), K(kmeans_ctx_->lists_), K(sample_count));
-    } else {
-      int64_t i = 0;
-      for (i = 0; OB_SUCC(ret) && i < sample_cnt; ++i) {
-        float *sample_vector = input_vectors.at(i);
-        if (OB_FAIL(calc_kmeans_distance(sample_vector, current_center, kmeans_ctx_->dim_, distance))) {
-          SHARE_LOG(WARN, "failed to calc kmeans distance", K(ret));
-        } else {
-          distance *= distance;
-          if (distance < weight_[i]) {
-            weight_[i] = distance;
-          }
-          sum += weight_[i];
-        }
-      }
-      if (OB_SUCC(ret)) {
-        // get the next center randomly
-        random_weight = (float)ObRandom::rand(1, 100) / 100.0 * sum;
-        for (i = 0; i < sample_cnt; ++i) {
-          if ((random_weight -= weight_[i]) <= 0.0) {
-            break;
-          }
-        }
-        if (i >= sample_cnt) {
-          i = sample_cnt - 1 < 0 ? 0 : sample_cnt - 1;
-        }
-        if (OB_FAIL(centers_[cur_idx_].push_back(kmeans_ctx_->dim_, input_vectors.at(i)))) {
-          SHARE_LOG(WARN, "failed to push back center", K(ret));
-        } else {
-          const int64_t center_count = centers_[cur_idx_].count();
-          SHARE_LOG(TRACE, "success to init center", K(ret), K(center_count));
-        }
-      }
+    return ret;
+  }
+  float *current_center = centers_[cur_idx_].at(centers_[cur_idx_].count() - 1);
+  const bool is_finish = (kmeans_ctx_->lists_ == centers_[cur_idx_].count());
+  if (is_finish) {
+    status_ = RUNNING_KMEANS;
+    SHARE_LOG(INFO, "success to init all centers", K(ret), K(centers_[cur_idx_].count()), K(kmeans_ctx_->lists_), K(input_vectors.count()));
+    return ret;
+  }
+  const int64_t sample_cnt = input_vectors.count();
+#ifdef __APPLE__
+  bool use_gpu = (sample_cnt >= static_cast<int64_t>(oceanbase::gpu_acc::vector_metal::METAL_L2_MIN_COUNT)
+                  && oceanbase::gpu_acc::vector_metal::is_metal_ready());
+  if (use_gpu) {
+    ret = init_centers_gpu(input_vectors, current_center);
+    if (OB_SUCC(ret)) {
+      SHARE_LOG(TRACE, "IVF kmeans init_centers use GPU", K(sample_cnt));
     }
+  } else {
+    ret = init_centers_cpu(input_vectors, current_center);
+  }
+#else
+  ret = init_centers_cpu(input_vectors, current_center);
+#endif
+  return ret;
+}
+
+int ObKmeansAlgo::init_centers_cpu(const ObIArray<float*> &input_vectors, float *current_center)
+{
+  int ret = OB_SUCCESS;
+  const int64_t sample_cnt = input_vectors.count();
+  const int64_t dim = kmeans_ctx_->dim_;
+  float distance = 0;
+  float sum = 0;
+  float random_weight = 0;
+  int64_t i = 0;
+  for (i = 0; OB_SUCC(ret) && i < sample_cnt; ++i) {
+    float *sample_vector = input_vectors.at(i);
+    if (OB_FAIL(calc_kmeans_distance(sample_vector, current_center, dim, distance))) {
+      SHARE_LOG(WARN, "failed to calc kmeans distance", K(ret));
+      return ret;
+    }
+    distance *= distance;
+    if (distance < weight_[i]) {
+      weight_[i] = distance;
+    }
+    sum += weight_[i];
+  }
+  if (OB_FAIL(ret)) {
+    return ret;
+  }
+  random_weight = (float)ObRandom::rand(1, 100) / 100.0 * sum;
+  for (i = 0; i < sample_cnt; ++i) {
+    if ((random_weight -= weight_[i]) <= 0.0) {
+      break;
+    }
+  }
+  if (i >= sample_cnt) {
+    i = sample_cnt - 1 < 0 ? 0 : sample_cnt - 1;
+  }
+  if (OB_FAIL(centers_[cur_idx_].push_back(kmeans_ctx_->dim_, input_vectors.at(i)))) {
+    SHARE_LOG(WARN, "failed to push back center", K(ret));
+  } else {
+    SHARE_LOG(TRACE, "success to init center", K(ret), K(centers_[cur_idx_].count()));
   }
   return ret;
 }
+
+#ifdef __APPLE__
+int ObKmeansAlgo::init_centers_gpu(const ObIArray<float*> &input_vectors, float *current_center)
+{
+  int ret = OB_SUCCESS;
+  const int64_t sample_cnt = input_vectors.count();
+  const int64_t dim = kmeans_ctx_->dim_;
+  float *samples_buf = static_cast<float *>(ivf_build_mem_ctx_.Allocate(sizeof(float) * sample_cnt * dim));
+  float *dist_row = static_cast<float *>(ivf_build_mem_ctx_.Allocate(sizeof(float) * sample_cnt));
+  if (OB_ISNULL(samples_buf) || OB_ISNULL(dist_row)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    SHARE_LOG(WARN, "failed to alloc for init_centers GPU", K(ret), K(sample_cnt));
+    if (samples_buf) ivf_build_mem_ctx_.Deallocate(samples_buf);
+    if (dist_row) ivf_build_mem_ctx_.Deallocate(dist_row);
+    return ret;
+  }
+  for (int64_t i = 0; i < sample_cnt; ++i) {
+    MEMCPY(samples_buf + i * dim, input_vectors.at(i), sizeof(float) * dim);
+  }
+  int rc = oceanbase::gpu_acc::vector_metal::metal_l2_query_vids(
+      current_center, samples_buf, sample_cnt, dim, dist_row);
+  ivf_build_mem_ctx_.Deallocate(samples_buf);
+  if (rc != 0) {
+    ret = OB_ERR_UNEXPECTED;
+    SHARE_LOG(WARN, "metal_l2_query_vids failed in init_centers", K(ret), K(rc));
+    ivf_build_mem_ctx_.Deallocate(dist_row);
+    return ret;
+  }
+  float sum = 0;
+  for (int64_t i = 0; i < sample_cnt; ++i) {
+    float d_sq = dist_row[i];
+    if (d_sq < weight_[i]) {
+      weight_[i] = d_sq;
+    }
+    sum += weight_[i];
+  }
+  ivf_build_mem_ctx_.Deallocate(dist_row);
+  float random_weight = (float)ObRandom::rand(1, 100) / 100.0 * sum;
+  int64_t pick = 0;
+  for (int64_t i = 0; i < sample_cnt; ++i) {
+    if ((random_weight -= weight_[i]) <= 0.0) {
+      pick = i;
+      break;
+    }
+    pick = i;
+  }
+  if (OB_FAIL(centers_[cur_idx_].push_back(kmeans_ctx_->dim_, input_vectors.at(pick)))) {
+    SHARE_LOG(WARN, "failed to push back center", K(ret));
+  } else {
+    SHARE_LOG(TRACE, "success to init center (GPU)", K(ret), K(centers_[cur_idx_].count()));
+  }
+  return ret;
+}
+#endif
 
 int ObKmeansAlgo::calc_kmeans_distance(const float* a, const float* b, const int64_t len, float &distance)
 {
@@ -677,7 +747,6 @@ int ObMultiKmeansExecutor::build_parallel(const common::ObTableID &table_id, con
     ret = OB_NOT_INIT;
     LOG_WARN("kmeans ctx is not inited", K(ret));
   } else {
-    LOG_INFO("start build_parallel", K(table_id), K(tablet_id), K(ctx_));
     ObArenaAllocator tmp_alloc;
     // init spilited_arrs, size: m * sample_vectors_.count()
     ObArrayArray<float *> splited_arrs(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(tmp_alloc, "MulKmeans"));
@@ -816,7 +885,50 @@ void ObElkanKmeansAlgo::destroy()
 
 int ObElkanKmeansAlgo::search_nearest_center(const ObIArray<float*> &input_vectors, float* centers_distance, int32_t *data_cnt_in_cluster, float &dis_obj)
 {
-  int ret = OB_SUCCESS;  
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(kmeans_ctx_->lists_ != centers_[cur_idx_].count() || OB_ISNULL(centers_distance) || OB_ISNULL(data_cnt_in_cluster))) {
+    ret = OB_ERR_UNEXPECTED;
+    SHARE_LOG(WARN, "param error", K(ret), K(kmeans_ctx_->lists_), K(centers_[cur_idx_].count()), KP(centers_distance), KP(data_cnt_in_cluster));
+    return ret;
+  }
+  const int64_t sample_cnt = input_vectors.count();
+  const int64_t center_count = kmeans_ctx_->lists_;
+  float distance = 0.0;
+  for (int64_t i = 0; OB_SUCC(ret) && i < center_count; ++i) {
+    for (int64_t j = i + 1; OB_SUCC(ret) && j < center_count; ++j) {
+      if (OB_FAIL(calc_kmeans_distance(centers_[cur_idx_].at(i), centers_[cur_idx_].at(j), kmeans_ctx_->dim_, distance))) {
+        SHARE_LOG(WARN, "failed to calc kmeans distance between centers", K(ret));
+        return ret;
+      }
+      set_centers_distance(centers_distance, i, j, distance);
+    }
+  }
+#ifdef __APPLE__
+  const int64_t total_pairs = sample_cnt * center_count;
+  const bool metal_ready = oceanbase::gpu_acc::vector_metal::is_metal_ready();
+  const int64_t min_count = static_cast<int64_t>(oceanbase::gpu_acc::vector_metal::METAL_L2_MIN_COUNT);
+  if (sample_cnt > 0 && center_count > 0 && metal_ready && total_pairs >= min_count) {
+    ret = search_nearest_center_gpu_matrix(input_vectors, data_cnt_in_cluster, dis_obj);
+    if (OB_SUCC(ret)) {
+      SHARE_LOG(TRACE, "IVF kmeans search_nearest_center use GPU matrix", K(sample_cnt), K(center_count));
+    }
+  } else if (sample_cnt > 0 && center_count >= min_count && metal_ready) {
+    ret = search_nearest_center_gpu(input_vectors, data_cnt_in_cluster, dis_obj);
+    if (OB_SUCC(ret)) {
+      SHARE_LOG(TRACE, "IVF kmeans search_nearest_center use GPU", K(sample_cnt), K(center_count));
+    }
+  } else {
+    ret = search_nearest_center_cpu(input_vectors, centers_distance, data_cnt_in_cluster, dis_obj);
+  }
+#else
+  ret = search_nearest_center_cpu(input_vectors, centers_distance, data_cnt_in_cluster, dis_obj);
+#endif
+  return ret;
+}
+
+int ObElkanKmeansAlgo::search_nearest_center_cpu(const ObIArray<float*> &input_vectors, float* centers_distance, int32_t *data_cnt_in_cluster, float &dis_obj)
+{
+  int ret = OB_SUCCESS;
   if (OB_UNLIKELY(kmeans_ctx_->lists_ != centers_[cur_idx_].count() || OB_ISNULL(centers_distance) || OB_ISNULL(data_cnt_in_cluster))) {
     ret = OB_ERR_UNEXPECTED;
     SHARE_LOG(WARN, "param error", K(ret), K(kmeans_ctx_->lists_), K(centers_[cur_idx_].count()), KP(centers_distance), KP(data_cnt_in_cluster));
@@ -826,22 +938,8 @@ int ObElkanKmeansAlgo::search_nearest_center(const ObIArray<float*> &input_vecto
     const int64_t sample_cnt = input_vectors.count();
     const int64_t center_count = kmeans_ctx_->lists_;
     const int64_t dim = kmeans_ctx_->dim_;
-
     const int64_t total_dis_cnt = center_count * sample_cnt;
 
-    float distance = 0.0;
-    // 1. calc distance between each two centers
-    for (int64_t i = 0; OB_SUCC(ret) && i < center_count; ++i) {
-      for (int64_t j = i + 1; OB_SUCC(ret) && j < center_count; ++j) {
-        calc_dis_cnt++;
-        if (OB_FAIL(calc_kmeans_distance(centers_[cur_idx_].at(i), centers_[cur_idx_].at(j), dim, distance))) {
-          SHARE_LOG(WARN, "failed to calc kmeans distance between centers", K(ret));
-        } else {
-          set_centers_distance(centers_distance, i, j, distance);
-        }
-      }
-    }
-  
     for (int64_t i = 0; OB_SUCC(ret) && i < sample_cnt; ++i) {
       float* sample_vector = input_vectors.at(i);
       int64_t nearest_center_idx = 0;
@@ -860,7 +958,7 @@ int ObElkanKmeansAlgo::search_nearest_center(const ObIArray<float*> &input_vecto
           float dis_half_dim = 0.0;
           calc_half_dis_cnt++;
           if (OB_FAIL(calc_kmeans_distance(sample_vector, centers_[cur_idx_].at(j), dim / 2, dis_half_dim))) {
-            SHARE_LOG(WARN, "failed to calc kmeans distance", K(ret)); 
+            SHARE_LOG(WARN, "failed to calc kmeans distance", K(ret));
           } else if (dis_half_dim < min_distance) {
             float full_distance = 0.0;
             calc_half_dis_cnt++;
@@ -876,7 +974,6 @@ int ObElkanKmeansAlgo::search_nearest_center(const ObIArray<float*> &input_vecto
         }
       }
       if (OB_SUCC(ret)) {
-        // Update the distance of the target function
         dis_obj += min_distance;
         if (OB_FAIL(centers_[next_idx()].add(nearest_center_idx, dim, sample_vector))) {
           SHARE_LOG(WARN, "failed to add vector to center buffer", K(ret));
@@ -893,6 +990,115 @@ int ObElkanKmeansAlgo::search_nearest_center(const ObIArray<float*> &input_vecto
   }
   return ret;
 }
+
+#ifdef __APPLE__
+int ObElkanKmeansAlgo::search_nearest_center_gpu(const ObIArray<float*> &input_vectors, int32_t *data_cnt_in_cluster, float &dis_obj)
+{
+  int ret = OB_SUCCESS;
+  const int64_t sample_cnt = input_vectors.count();
+  const int64_t center_count = kmeans_ctx_->lists_;
+  const int64_t dim = kmeans_ctx_->dim_;
+  float *centers_base = centers_[cur_idx_].at(0);
+  if (OB_ISNULL(centers_base)) {
+    ret = OB_ERR_UNEXPECTED;
+    SHARE_LOG(WARN, "centers base is null", K(ret));
+    return ret;
+  }
+  float *dist_row = static_cast<float *>(ivf_build_mem_ctx_.Allocate(sizeof(float) * center_count));
+  if (OB_ISNULL(dist_row)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    SHARE_LOG(WARN, "failed to alloc dist_row for GPU kmeans", K(ret), K(center_count));
+    return ret;
+  }
+  dis_obj = 0.0f;
+  for (int64_t i = 0; OB_SUCC(ret) && i < sample_cnt; ++i) {
+    int rc = oceanbase::gpu_acc::vector_metal::metal_l2_query_vids(
+        input_vectors.at(i), centers_base, center_count, dim, dist_row);
+    if (rc != 0) {
+      ret = OB_ERR_UNEXPECTED;
+      SHARE_LOG(WARN, "metal_l2_query_vids failed", K(ret), K(rc), K(i));
+      break;
+    }
+    int64_t nearest_center_idx = 0;
+    float min_distance = dist_row[0];
+    for (int64_t j = 1; j < center_count; ++j) {
+      if (dist_row[j] < min_distance) {
+        min_distance = dist_row[j];
+        nearest_center_idx = j;
+      }
+    }
+    dis_obj += min_distance;
+    if (OB_FAIL(centers_[next_idx()].add(nearest_center_idx, dim, input_vectors.at(i)))) {
+      SHARE_LOG(WARN, "failed to add vector to center buffer", K(ret));
+    } else {
+      ++data_cnt_in_cluster[nearest_center_idx];
+    }
+  }
+  ivf_build_mem_ctx_.Deallocate(dist_row);
+  if (OB_SUCC(ret) && sample_cnt > 0) {
+    dis_obj = dis_obj / sample_cnt;
+  }
+  return ret;
+}
+
+int ObElkanKmeansAlgo::search_nearest_center_gpu_matrix(const ObIArray<float*> &input_vectors, int32_t *data_cnt_in_cluster, float &dis_obj)
+{
+  int ret = OB_SUCCESS;
+  const int64_t sample_cnt = input_vectors.count();
+  const int64_t center_count = kmeans_ctx_->lists_;
+  const int64_t dim = kmeans_ctx_->dim_;
+  float *centers_base = centers_[cur_idx_].at(0);
+  if (OB_ISNULL(centers_base)) {
+    ret = OB_ERR_UNEXPECTED;
+    SHARE_LOG(WARN, "centers base is null", K(ret));
+    return ret;
+  }
+  float *samples_buf = static_cast<float *>(ivf_build_mem_ctx_.Allocate(sizeof(float) * sample_cnt * dim));
+  float *distances_matrix = static_cast<float *>(ivf_build_mem_ctx_.Allocate(sizeof(float) * sample_cnt * center_count));
+  if (OB_ISNULL(samples_buf) || OB_ISNULL(distances_matrix)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    SHARE_LOG(WARN, "failed to alloc for GPU kmeans matrix", K(ret), K(sample_cnt), K(center_count));
+    if (samples_buf) ivf_build_mem_ctx_.Deallocate(samples_buf);
+    if (distances_matrix) ivf_build_mem_ctx_.Deallocate(distances_matrix);
+    return ret;
+  }
+  for (int64_t i = 0; i < sample_cnt; ++i) {
+    MEMCPY(samples_buf + i * dim, input_vectors.at(i), sizeof(float) * dim);
+  }
+  int rc = oceanbase::gpu_acc::vector_metal::metal_l2_batch_query_vids(
+      samples_buf, centers_base, sample_cnt, center_count, dim, distances_matrix);
+  ivf_build_mem_ctx_.Deallocate(samples_buf);
+  if (rc != 0) {
+    ret = OB_ERR_UNEXPECTED;
+    SHARE_LOG(WARN, "metal_l2_batch_query_vids failed", K(ret), K(rc), K(sample_cnt), K(center_count));
+    ivf_build_mem_ctx_.Deallocate(distances_matrix);
+    return ret;
+  }
+  dis_obj = 0.0f;
+  for (int64_t i = 0; OB_SUCC(ret) && i < sample_cnt; ++i) {
+    const float *row = distances_matrix + i * center_count;
+    int64_t nearest_center_idx = 0;
+    float min_distance = row[0];
+    for (int64_t j = 1; j < center_count; ++j) {
+      if (row[j] < min_distance) {
+        min_distance = row[j];
+        nearest_center_idx = j;
+      }
+    }
+    dis_obj += min_distance;
+    if (OB_FAIL(centers_[next_idx()].add(nearest_center_idx, dim, input_vectors.at(i)))) {
+      SHARE_LOG(WARN, "failed to add vector to center buffer", K(ret));
+    } else {
+      ++data_cnt_in_cluster[nearest_center_idx];
+    }
+  }
+  ivf_build_mem_ctx_.Deallocate(distances_matrix);
+  if (OB_SUCC(ret) && sample_cnt > 0) {
+    dis_obj = dis_obj / sample_cnt;
+  }
+  return ret;
+}
+#endif
 
 int ObElkanKmeansAlgo::do_kmeans(const ObIArray<float*> &input_vectors)
 {
@@ -970,8 +1176,6 @@ int ObElkanKmeansAlgo::do_kmeans(const ObIArray<float*> &input_vectors)
         float diff = (iter == 0) ? FLT_MAX : fabs(prev_dis_obj - dis_obj) / prev_dis_obj;
         prev_dis_obj = dis_obj;
         if (iter > 0 && diff <= EARLY_FINISH_THRESHOLD / 1000) {
-          double imbalance_factor = this->calc_imbalance_factor(input_vectors, data_cnt_in_cluster);
-          LOG_INFO("finish do kmeans before all iters", K(ret), K(iter), K(dis_obj), K(diff), K(imbalance_factor));
           break; // finish
         } else {
           cur_idx_ = next_idx();
@@ -1076,7 +1280,6 @@ int64_t ObIvfBuildHelper::get_free_vector_mem_size()
   } else if (tenant_mem_size > curr_used) {
     free_vector_mem_size = tenant_mem_size - curr_used;
   }
-  LOG_INFO("free vector mem limit size.", K(ret), K(free_vector_mem_size), K(tenant_mem_size), K(curr_used));
   return free_vector_mem_size;
 }
 
@@ -1326,7 +1529,6 @@ bool ObIvfPqBuildHelper::can_use_parallel()
       res = true;
     }
   }
-  LOG_INFO("can use parallel", K(res), K(max_thread_cnt), K(parallel_need_max_mem), K(vector_free_mem));
   return res;
 }
 
@@ -1335,14 +1537,13 @@ int ObKmeansBuildTaskHandler::init(int tg_id)
 {
   int ret = OB_SUCCESS;
   if (is_inited_) {
-    LOG_INFO("init before", KR(ret));
+    // already inited, do nothing
   } else if (INVALID_TG_ID == tg_id) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid tg_id", KR(ret), K(tg_id));
   } else {
     tg_id_ = tg_id;
     is_inited_ = true;
-    LOG_INFO("init vector kmeans build task handler", K(ret), K_(tg_id));
   }
   return ret;
 }
@@ -1360,15 +1561,12 @@ int ObKmeansBuildTaskHandler::start()
     LOG_WARN("TG_SET_ADAPTIVE_THREAD failed", KR(ret), K_(tg_id));
   } else if (OB_FAIL(TG_SET_HANDLER_AND_START(tg_id_, *this))) {
     LOG_WARN("TG_SET_HANDLER_AND_START failed", KR(ret), K_(tg_id));
-  } else {
-    LOG_INFO("succ to start vector kmeans build task handler", K_(tg_id), K(max_thread_cnt));
   }
   return ret;
 }
 
 void ObKmeansBuildTaskHandler::stop()
 {
-  LOG_INFO("vector kmeans build task start to stop", K_(tg_id));
   if (OB_LIKELY(INVALID_TG_ID != tg_id_)) {
     TG_STOP(tg_id_);
   }
@@ -1376,7 +1574,6 @@ void ObKmeansBuildTaskHandler::stop()
 
 void ObKmeansBuildTaskHandler::wait()
 {
-  LOG_INFO("vector kmeans build task handler start to wait", K_(tg_id));
   if (OB_LIKELY(INVALID_TG_ID != tg_id_)) {
     TG_WAIT(tg_id_);
   }
@@ -1384,7 +1581,6 @@ void ObKmeansBuildTaskHandler::wait()
 
 void ObKmeansBuildTaskHandler::destroy()
 {
-  LOG_INFO("vector kmeans build task handler start to destroy", K_(tg_id));
   // tg_id is managed by external service, no need to destroy here
   tg_id_ = INVALID_TG_ID;
   is_inited_ = false;
@@ -1406,7 +1602,6 @@ int ObKmeansBuildTaskHandler::push_task(ObKmeansBuildTask &build_task)
         LOG_WARN("fail to TG_PUSH_TASK", KR(ret), K(build_task));
       } else {
         // sleep 1s and retry
-        LOG_DEBUG("fail to TG_PUSH_TASK, queue is full will retry", KR(ret), K(build_task));
         ob_usleep(WAIT_RETRY_PUSH_TASK_TIME);
         ret = OB_SUCCESS;
       }

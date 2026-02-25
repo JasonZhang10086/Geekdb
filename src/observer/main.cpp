@@ -43,6 +43,7 @@
 #ifdef __APPLE__
 #include <stdlib.h> // malloc.h is not available on macOS, use stdlib.h instead
 #include <mach-o/dyld.h> // for _NSGetExecutablePath
+#include "gpu_acc/metal/vector/ob_metal_l2.h"
 #else
 #include <malloc.h>
 #endif
@@ -690,6 +691,15 @@ int inner_main(int argc, char *argv[])
   } else if (OB_FAIL(ObEncryptionUtil::init_ssl_malloc())) {
     MPRINT("failed to init crypto malloc");
   }
+#ifdef __APPLE__
+  if (OB_SUCC(ret)) {
+    if (!gpu_acc::vector_metal::is_metal_ready()) {
+      MPRINT("GeekDB cannot start: GPU acceleration (Metal) is required, Metal is not available.");
+      MPRINT("Please use Standard SeekDB: https://www.oceanbase.ai/.");
+      ret = OB_NOT_SUPPORTED;
+    }
+  }
+#endif
   if (OB_FAIL(ret)) {
   } else if (!opts->nodaemon_ && !opts->initialize_) {
     MPRINT("The seekdb will be started as a daemon process. You can check the server status by client later.");

@@ -21,6 +21,7 @@
 #include "sql/engine/expr/ob_datum_cast.h"
 #include "sql/engine/expr/ob_array_expr_utils.h"
 #include "sql/engine/expr/ob_expr_column_conv.h"
+#include "sql/engine/expr/ob_expr_vec_ivf_center_id.h"
 
 namespace oceanbase
 {

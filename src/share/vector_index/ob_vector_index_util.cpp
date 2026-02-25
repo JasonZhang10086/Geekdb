@@ -5574,6 +5574,61 @@ int ObVectorIndexUtil::eval_ivf_centers_common(ObIAllocator &allocator,
   return ret;
 }
 
+#ifdef __APPLE__
+int ObVectorIndexUtil::eval_ivf_centers_common_metal(ObIAllocator &allocator,
+                                                    const sql::ObExpr &expr,
+                                                    sql::ObEvalCtx &eval_ctx,
+                                                    float *&centers_buf,
+                                                    int64_t &num_centers,
+                                                    int64_t &dim,
+                                                    ObTableID &table_id,
+                                                    ObTabletID &tablet_id,
+                                                    ObVectorIndexDistAlgorithm &dis_algo,
+                                                    bool &contain_null,
+                                                    ObIArrayType *&arr)
+{
+  int ret = OB_SUCCESS;
+  centers_buf = nullptr;
+  num_centers = 0;
+  dim = 0;
+
+  ObSEArray<float*, 64> centers;
+  uint64_t center_prefix = 0;
+  if (OB_FAIL(eval_ivf_centers_common(
+          allocator, expr, eval_ctx, centers, table_id, tablet_id, dis_algo, contain_null, arr, center_prefix))) {
+    LOG_WARN("eval_ivf_centers_common failed in metal helper", K(ret));
+  } else if (contain_null || OB_ISNULL(arr) || arr->size() == 0) {
+    // caller will decide to fall back to CPU on these conditions
+  } else {
+    dim = static_cast<int64_t>(arr->size());
+    num_centers = centers.count();
+    if (num_centers > 0 && dim > 0) {
+      uint64_t buf_size = static_cast<uint64_t>(num_centers) * static_cast<uint64_t>(dim) * sizeof(float);
+      centers_buf = static_cast<float*>(allocator.alloc(buf_size));
+      if (OB_ISNULL(centers_buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to allocate centers_buf for metal", K(ret), K(num_centers), K(dim));
+      } else {
+        for (int64_t c = 0; c < num_centers; ++c) {
+          if (OB_ISNULL(centers.at(c))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected null center pointer", K(ret), K(c));
+            break;
+          }
+          MEMCPY(centers_buf + c * dim, centers.at(c), static_cast<size_t>(dim) * sizeof(float));
+        }
+        if (OB_FAIL(ret)) {
+          centers_buf = nullptr;
+          num_centers = 0;
+          dim = 0;
+        }
+      }
+    }
+  }
+  return ret;
+}
+#endif
+
 int ObVectorIndexUtil::estimate_hnsw_memory(uint64_t num_vectors,
                                             const ObVectorIndexParam &param,
                                             uint64_t &est_mem,

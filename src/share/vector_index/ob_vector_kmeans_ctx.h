@@ -139,6 +139,10 @@ protected:
   virtual int init_first_center(const ObIArray<float*> &input_vectors);
   // use kmeans++ to init centers
   virtual int init_centers(const ObIArray<float*> &input_vectors);
+  int init_centers_cpu(const ObIArray<float*> &input_vectors, float *current_center);
+#ifdef __APPLE__
+  int init_centers_gpu(const ObIArray<float*> &input_vectors, float *current_center);
+#endif
   double calc_imbalance_factor(const ObIArray<float*> &input_vectors, int32_t *data_cnt_in_cluster);
   void set_centers_distance(float* centers_distance, int64_t i, int64_t j, float distance);
   float get_centers_distance(float* centers_distance, int64_t i, int64_t j);
@@ -171,6 +175,11 @@ protected:
 
 private:
   int search_nearest_center(const ObIArray<float*> &input_vectors, float* centers_distance, int32_t *data_cnt_in_cluster, float &dis_obj);
+  int search_nearest_center_cpu(const ObIArray<float*> &input_vectors, float* centers_distance, int32_t *data_cnt_in_cluster, float &dis_obj);
+#ifdef __APPLE__
+  int search_nearest_center_gpu(const ObIArray<float*> &input_vectors, int32_t *data_cnt_in_cluster, float &dis_obj);
+  int search_nearest_center_gpu_matrix(const ObIArray<float*> &input_vectors, int32_t *data_cnt_in_cluster, float &dis_obj);
+#endif
 
 protected:
   static constexpr float GATE_DISTANCE_FACTOR = 4.0; // for gate distance

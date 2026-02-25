@@ -294,7 +294,7 @@ int HnswIndexHandler::cal_distance_by_id(const float *vector,
 }
 
 int HnswIndexHandler::get_extra_info_by_ids(const int64_t *ids, int64_t count,
-                                            char *extra_infos)
+                                           char *extra_infos)
 {
   int ret = OB_SUCCESS;
   tl::expected<void, Error> result = index_->GetExtraInfoByIds(ids, count, extra_infos);

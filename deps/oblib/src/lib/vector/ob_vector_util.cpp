@@ -235,9 +235,9 @@ int get_vid_bound(obvsag::VectorIndexPtr index_handler, int64_t &min_vid, int64_
 #endif
 }
 
-int get_extra_info_by_ids(obvsag::VectorIndexPtr& index_handler, 
-                          const int64_t* ids, 
-                          int64_t count, 
+int get_extra_info_by_ids(obvsag::VectorIndexPtr& index_handler,
+                          const int64_t* ids,
+                          int64_t count,
                           char *extra_infos) {
 INIT_SUCC(ret);
 #ifdef OB_BUILD_CDC_DISABLE_VSAG

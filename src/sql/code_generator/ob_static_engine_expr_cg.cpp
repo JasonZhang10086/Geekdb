@@ -101,6 +101,21 @@ int ObStaticEngineExprCG::generate(ObRawExpr *expr,
   return ret;
 }
 
+// 向量 L2/cosine 距离 GPU 路径希望单批更大，减少调用次数、提高 GPU 利用率
+static const int64_t VECTOR_GPU_PREFERRED_BATCH = 1024;
+
+static bool has_vector_gpu_distance_expr(const common::ObIArray<ObRawExpr *> &raw_exprs)
+{
+  for (int64_t i = 0; i < raw_exprs.count(); i++) {
+    ObItemType t = raw_exprs.at(i)->get_expr_type();
+    if (t == T_FUN_SYS_L2_DISTANCE || t == T_FUN_SYS_L2_SQUARED || t == T_FUN_SYS_COSINE_DISTANCE
+        || t == T_FUN_SYS_VEC_IVF_CENTER_ID) {
+      return true;
+    }
+  }
+  return false;
+}
+
 int ObStaticEngineExprCG::detect_batch_size(const ObRawExprUniqueSet &exprs,
                                             int64_t &batch_size,
                                             int64_t config_maxrows,
@@ -116,6 +131,9 @@ int ObStaticEngineExprCG::detect_batch_size(const ObRawExprUniqueSet &exprs,
   if (size == ObExprBatchSize::full) {
     if (config_maxrows) {
       batch_size = config_maxrows;
+      if (has_vector_gpu_distance_expr(raw_exprs)) {
+        batch_size = std::max(batch_size, VECTOR_GPU_PREFERRED_BATCH);
+      }
       for (int64_t i = 0; OB_SUCC(ret) && i < raw_exprs.count(); i++) {
         if (is_vectorized_expr(raw_exprs.at(i))) {
           int64_t max_batch_size = 0;
@@ -306,7 +324,8 @@ int ObStaticEngineExprCG::cg_expr_basic(const ObIArray<ObRawExpr *> &raw_exprs)
     const ObObjMeta &result_meta = raw_expr->get_result_meta();
     // init type_
     rt_expr->type_ = raw_expr->get_expr_type();
-    rt_expr->batch_result_ = batch_size_ > 0 && raw_expr->is_vectorize_result();
+    // 向量距离表达式(l2_distance等)需 batch_result_=true，否则在 sort 中会被强制 EvalBound(1) 逐行调度，无法触发 GPU
+    rt_expr->batch_result_ = batch_size_ > 0 && (raw_expr->is_vectorize_result() || raw_expr->is_vector_sort_expr());
     rt_expr->batch_idx_mask_ = rt_expr->batch_result_ ? UINT64_MAX : 0;
     rt_expr->is_called_in_sql_ = raw_expr->is_called_in_sql();
     rt_expr->is_static_const_ = raw_expr->is_static_const_expr();
