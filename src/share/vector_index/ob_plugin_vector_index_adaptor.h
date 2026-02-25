@@ -631,7 +631,8 @@ public:
                       int64_t count,
                       const float *&distance,
                       bool is_snap,
-                      uint32_t sparse_byte_len = 0);
+                      uint32_t sparse_byte_len = 0,
+                      bool use_gpu_acc = false);
   int get_extra_info_by_ids(const int64_t *vids, int64_t count, char *extra_info_buf_ptr, bool is_snap);
 
   // for virtual table

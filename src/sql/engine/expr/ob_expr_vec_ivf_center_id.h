@@ -17,6 +17,7 @@
 #ifndef OCEANBASE_SRC_SQL_ENGINE_EXPR_OB_EXPR_VEC_IVF_CENTER_ID_H_
 #define OCEANBASE_SRC_SQL_ENGINE_EXPR_OB_EXPR_VEC_IVF_CENTER_ID_H_
 #include "sql/engine/expr/ob_expr_operator.h"
+#include "sql/engine/expr/ob_expr.h"
 
 namespace oceanbase
 {
@@ -44,6 +45,17 @@ public:
       const ObExpr &expr,
       ObEvalCtx &eval_ctx,
       ObDatum &expr_datum);
+  /** Vectorized (batch) and vectorized 2.0: same batch size as l2_distance/cosine_distance, GPU on Mac when Metal L2 ready. */
+  static int calc_center_id_batch_cpu(const ObExpr &expr, ObEvalCtx &ctx,
+                                      const ObBitVector &skip, const int64_t batch_size);
+  static int calc_center_id_vector_cpu(const ObExpr &expr, ObEvalCtx &ctx,
+                                       const ObBitVector &skip, const EvalBound &bound);
+#ifdef __APPLE__
+  static int calc_center_id_batch_metal(const ObExpr &expr, ObEvalCtx &ctx,
+                                        const ObBitVector &skip, const int64_t batch_size);
+  static int calc_center_id_vector_metal(const ObExpr &expr, ObEvalCtx &ctx,
+                                         const ObBitVector &skip, const EvalBound &bound);
+#endif
   virtual bool need_rt_ctx() const override { return true; }
 private :
   //disallow copy

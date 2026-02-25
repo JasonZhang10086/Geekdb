@@ -28,6 +28,7 @@ function(ob_server_add_target target)
   set(ob_objects "${ob_objects}" CACHE INTERNAL "observer object library list")
 endfunction()
 
+add_subdirectory(gpu_acc)
 add_subdirectory(share)
 add_subdirectory(sql)
 add_subdirectory(pl)

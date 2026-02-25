@@ -299,7 +299,7 @@ int ObExprFrameInfo::alloc_frame(ObIAllocator &exec_allocator,
     }
     int64_t begin_idx = frame_idx;
     ALLOC_FRAME_MEM(dynamic_frame_);
-    //for subquery core 
+    //for subquery core
     // Preemptively set datum in frame to null
     int64_t item_size = sizeof(ObDatum) + sizeof(ObEvalInfo);
     if (dynamic_frame_.count() > 0 && dynamic_frame_.at(0).use_rich_format_) {

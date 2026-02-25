@@ -686,8 +686,13 @@ ob_set_subtarget(ob_share object_storage
   object_storage/ob_object_storage_struct.cpp
 )
 
-ob_set_subtarget(ob_share vector_index
+# 单独编译，避免 gpu_acc 头文件变更时触发整个 vector_index 组重编
+ob_set_subtarget(ob_share ALONE
   vector_index/ob_plugin_vector_index_adaptor.cpp
+)
+set_source_files_properties(vector_index/ob_plugin_vector_index_adaptor.cpp PROPERTIES UNITY_GROUP "ob_share_vec_adaptor")
+
+ob_set_subtarget(ob_share vector_index
   vector_index/ob_plugin_vector_index_util.cpp
   vector_index/ob_plugin_vector_index_scheduler.cpp
   vector_index/ob_plugin_vector_index_service.cpp
@@ -757,6 +762,8 @@ ob_add_new_object_target(ob_share_extra ob_share_extra)
 target_compile_options(ob_share PRIVATE)
 #target_compile_options(ob_share PRIVATE -Wshorten-64-to-32)
 target_link_libraries(ob_share PUBLIC ob_base)
+# Do not link ob_gpu_acc into ob_share to avoid full rebuild when gpu_acc changes.
+# Include path for gpu_acc is from top-level; observer links ob_gpu_acc separately.
 target_compile_options(ob_share_extra PRIVATE)
 target_link_libraries(ob_share_extra PUBLIC ob_base_without_pass)
 

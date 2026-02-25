@@ -323,6 +323,12 @@ ob_set_subtarget(ob_sql engine_dml
   engine/dml/ob_fk_checker.cpp
 )
 
+# 单独编译，避免 gpu_acc 头文件变更时触发整个 engine_expr 组重编
+ob_set_subtarget(ob_sql ALONE
+  engine/expr/ob_expr_vector.cpp
+)
+set_source_files_properties(engine/expr/ob_expr_vector.cpp PROPERTIES UNITY_GROUP "ob_sql_expr_vector")
+
 ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_batch_eval_util.cpp
   engine/expr/ob_expr.cpp
@@ -535,7 +541,6 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_last_refresh_scn.cpp
   engine/expr/ob_expr_json_utils.cpp
   engine/expr/ob_expr_array.cpp
-  engine/expr/ob_expr_vector.cpp
   engine/expr/ob_expr_vector_similarity.cpp
   engine/expr/ob_array_expr_utils.cpp
   engine/expr/ob_array_cast.cpp

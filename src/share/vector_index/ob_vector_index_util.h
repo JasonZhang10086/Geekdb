@@ -777,6 +777,21 @@ public:
                                     bool &contain_null,
                                     ObIArrayType *&arr,
                                     uint64_t &center_prefix);
+#ifdef __APPLE__
+  // Helper used by Metal-based IVF center-id expression:
+  // returns centers as one contiguous buffer (num_centers * dim floats) so GPU can consume directly.
+  static int eval_ivf_centers_common_metal(ObIAllocator &allocator,
+                                           const sql::ObExpr &expr,
+                                           sql::ObEvalCtx &eval_ctx,
+                                           float *&centers_buf,
+                                           int64_t &num_centers,
+                                           int64_t &dim,
+                                           ObTableID &table_id,
+                                           ObTabletID &tablet_id,
+                                           ObVectorIndexDistAlgorithm &dis_algo,
+                                           bool &contain_null,
+                                           ObIArrayType *&arr);
+#endif
   static int estimate_hnsw_memory(
       uint64_t num_vectors,
       const ObVectorIndexParam &param,

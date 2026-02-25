@@ -28,6 +28,8 @@
 #include "sql/das/ob_das_utils.h"
 #include "sql/das/ob_das_ir_define.h"
 #include "sql/das/iter/ob_das_func_data_iter.h"
+#include "share/system_variable/ob_sys_var_class_type.h"
+#include "sql/session/ob_sql_session_info.h"
 
 namespace oceanbase
 {
@@ -1124,32 +1126,36 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter_brute_force_not_bq(
     LOG_WARN("shouldn't be null.", K(ret));
   } else if (OB_FAIL(max_heap.init())) {
     LOG_WARN("failed to init max heap.", K(ret));
-  } else if (OB_FAIL(adaptor->vsag_query_vids(reinterpret_cast<float *>(search_vec.ptr()), brute_vids, brute_cnt, distances_inc, false, search_vec.length()))) {
-    LOG_WARN("failed to query vids.", K(ret), K(brute_cnt));
-  } else if (OB_FAIL(adaptor->vsag_query_vids(reinterpret_cast<float *>(search_vec.ptr()), brute_vids, brute_cnt, distances_snap, true, search_vec.length()))) {
-    LOG_WARN("failed to query vids.", K(ret), K(brute_cnt));
-  } else if (distances_inc == nullptr && distances_snap == nullptr) {
-    need_complete_data = check_need_complete_data ? true : false;
-  } else if (distances_inc == nullptr || distances_snap == nullptr) {
-    bool is_snap = distances_inc == nullptr;
-    for (int i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
-      double distance = distances_inc == nullptr ? distances_snap[i] : distances_inc[i];
-      // if distances == -1, means vid not exist
-      if (distance != -1 && distance <= distance_threshold_) {
-        max_heap.push(brute_vids[i], distance, is_snap);
-      } else {
-        need_complete_data = check_need_complete_data ? true : false;
-      }
-    }
   } else {
-    for (int i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
-      bool is_snap = distances_inc[i] == -1;
-      double distance = distances_inc[i] == -1 ? distances_snap[i] : distances_inc[i];
-      // if distances == -1, means vid not exist
-      if (distance != -1 && distance <= distance_threshold_) {
-        max_heap.push(brute_vids[i], distance, is_snap);
-      } else {
-        need_complete_data = check_need_complete_data ? true : false;
+    bool use_gpu_acc = (OB_NOT_NULL(exec_ctx_));
+    if (OB_FAIL(adaptor->vsag_query_vids(reinterpret_cast<float *>(search_vec.ptr()), brute_vids, brute_cnt, distances_inc, false, search_vec.length(), use_gpu_acc))) {
+      LOG_WARN("failed to query vids.", K(ret), K(brute_cnt));
+    } else if (OB_FAIL(adaptor->vsag_query_vids(reinterpret_cast<float *>(search_vec.ptr()), brute_vids, brute_cnt, distances_snap, true, search_vec.length(), use_gpu_acc))) {
+      LOG_WARN("failed to query vids.", K(ret), K(brute_cnt));
+    }
+    if (distances_inc == nullptr && distances_snap == nullptr) {
+      need_complete_data = check_need_complete_data ? true : false;
+    } else if (distances_inc == nullptr || distances_snap == nullptr) {
+      bool is_snap = distances_inc == nullptr;
+      for (int i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
+        double distance = distances_inc == nullptr ? distances_snap[i] : distances_inc[i];
+        // if distances == -1, means vid not exist
+        if (distance != -1 && distance <= distance_threshold_) {
+          max_heap.push(brute_vids[i], distance, is_snap);
+        } else {
+          need_complete_data = check_need_complete_data ? true : false;
+        }
+      }
+    } else {
+      for (int i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
+        bool is_snap = distances_inc[i] == -1;
+        double distance = distances_inc[i] == -1 ? distances_snap[i] : distances_inc[i];
+        // if distances == -1, means vid not exist
+        if (distance != -1 && distance <= distance_threshold_) {
+          max_heap.push(brute_vids[i], distance, is_snap);
+        } else {
+          need_complete_data = check_need_complete_data ? true : false;
+        }
       }
     }
   }
@@ -1266,12 +1272,13 @@ int ObDASHNSWScanIter::query_brute_force_distances(ObPluginVectorIndexAdaptor* a
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), KP(adaptor), KP(brute_vids), K(brute_cnt));
   } else {
+    bool use_gpu_acc = (OB_NOT_NULL(exec_ctx_));
     dist_result.brute_cnt = brute_cnt;
     if (OB_FAIL(adaptor->vsag_query_vids(reinterpret_cast<float *>(const_cast<char*>(search_vec.ptr())),
-                                         brute_vids, brute_cnt, dist_result.distances_inc, false))) {
+                                         brute_vids, brute_cnt, dist_result.distances_inc, false, 0, use_gpu_acc))) {
       LOG_WARN("failed to query incremental vids", K(ret), K(brute_cnt));
     } else if (OB_FAIL(adaptor->vsag_query_vids(reinterpret_cast<float *>(const_cast<char*>(search_vec.ptr())),
-                                           brute_vids, brute_cnt, dist_result.distances_snap, true))) {
+                                           brute_vids, brute_cnt, dist_result.distances_snap, true, 0, use_gpu_acc))) {
       LOG_WARN("failed to query snapshot vids", K(ret), K(brute_cnt));
     }
   }

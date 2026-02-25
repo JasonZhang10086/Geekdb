@@ -18,6 +18,7 @@
 #define OCEANBASE_SQL_OB_EXPR_VECTOR
 
 #include "sql/engine/expr/ob_expr_operator.h"
+#include "sql/engine/expr/ob_i_expr_extra_info.h"
 #include "lib/udt/ob_array_type.h"
 #include "share/vector_type/ob_vector_l2_distance.h"
 #include "share/vector_type/ob_vector_cosine_distance.h"
@@ -30,6 +31,33 @@ namespace oceanbase
 {
 namespace sql
 {
+
+/** CG 阶段判定是否可用 Metal L2（is_metal_ready），运行时仅查 valid_cnt；Mac 默认使用 Metal */
+struct ObExprL2MetalExtraInfo : public ObIExprExtraInfo
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObExprL2MetalExtraInfo(common::ObIAllocator &alloc, ObExprOperatorType type)
+      : ObIExprExtraInfo(alloc, type), use_metal_(false) {}
+  virtual int deep_copy(common::ObIAllocator &allocator,
+                        const ObExprOperatorType type,
+                        ObIExprExtraInfo *&copied_info) const override;
+  bool use_metal_;
+};
+
+/** CG 阶段判定是否可用 Metal Cosine，运行时仅查 session 与 valid_cnt */
+struct ObExprCosineMetalExtraInfo : public ObIExprExtraInfo
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObExprCosineMetalExtraInfo(common::ObIAllocator &alloc, ObExprOperatorType type)
+      : ObIExprExtraInfo(alloc, type), use_metal_(false) {}
+  virtual int deep_copy(common::ObIAllocator &allocator,
+                        const ObExprOperatorType type,
+                        ObIExprExtraInfo *&copied_info) const override;
+  bool use_metal_;
+};
+
 class ObExprVector : public ObFuncExprOperator
 {
 public:
@@ -139,11 +167,24 @@ public:
   explicit ObExprVectorL2Distance(common::ObIAllocator &alloc);
   virtual ~ObExprVectorL2Distance() {};
 
+  virtual int calc_result_type2(ObExprResType &type,
+                                ObExprResType &type1,
+                                ObExprResType &type2,
+                                common::ObExprTypeCtx &type_ctx) const override;
   virtual int cg_expr(ObExprCGCtx &expr_cg_ctx,
                       const ObRawExpr &raw_expr,
                       ObExpr &rt_expr) const override;
 
   static int calc_l2_distance(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
+  /** CG 时二选一注册：Metal 可用则注册 _metal，否则注册 _cpu，实现内无需再分支判断 */
+  static int calc_l2_distance_batch_metal(const ObExpr &expr, ObEvalCtx &ctx,
+                                          const ObBitVector &skip, const int64_t batch_size);
+  static int calc_l2_distance_batch_cpu(const ObExpr &expr, ObEvalCtx &ctx,
+                                        const ObBitVector &skip, const int64_t batch_size);
+  static int calc_l2_distance_vector_metal(const ObExpr &expr, ObEvalCtx &ctx,
+                                           const ObBitVector &skip, const EvalBound &bound);
+  static int calc_l2_distance_vector_cpu(const ObExpr &expr, ObEvalCtx &ctx,
+                                          const ObBitVector &skip, const EvalBound &bound);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprVectorL2Distance);
 };
@@ -154,6 +195,10 @@ public:
   explicit ObExprVectorL2Squared(common::ObIAllocator &alloc);
   virtual ~ObExprVectorL2Squared() {};
 
+  virtual int calc_result_type2(ObExprResType &type,
+                               ObExprResType &type1,
+                               ObExprResType &type2,
+                               common::ObExprTypeCtx &type_ctx) const override;
   virtual int cg_expr(ObExprCGCtx &expr_cg_ctx,
                       const ObRawExpr &raw_expr,
                       ObExpr &rt_expr) const override;
@@ -169,11 +214,23 @@ public:
   explicit ObExprVectorCosineDistance(common::ObIAllocator &alloc);
   virtual ~ObExprVectorCosineDistance() {};
 
+  virtual int calc_result_type2(ObExprResType &type,
+                               ObExprResType &type1,
+                               ObExprResType &type2,
+                               common::ObExprTypeCtx &type_ctx) const override;
   virtual int cg_expr(ObExprCGCtx &expr_cg_ctx,
                       const ObRawExpr &raw_expr,
                       ObExpr &rt_expr) const override;
 
   static int calc_cosine_distance(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
+  static int calc_cosine_distance_batch_metal(const ObExpr &expr, ObEvalCtx &ctx,
+                                             const ObBitVector &skip, const int64_t batch_size);
+  static int calc_cosine_distance_batch_cpu(const ObExpr &expr, ObEvalCtx &ctx,
+                                            const ObBitVector &skip, const int64_t batch_size);
+  static int calc_cosine_distance_vector_metal(const ObExpr &expr, ObEvalCtx &ctx,
+                                              const ObBitVector &skip, const EvalBound &bound);
+  static int calc_cosine_distance_vector_cpu(const ObExpr &expr, ObEvalCtx &ctx,
+                                             const ObBitVector &skip, const EvalBound &bound);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprVectorCosineDistance);
 };

@@ -31,6 +31,14 @@
 #include "share/aggregate/aggr_extra.h"
 #include "sql/engine/basic/ob_compact_row.h"
 #include "sql/engine/expr/ob_array_expr_utils.h"
+#ifdef __APPLE__
+#include "gpu_acc/ob_gpu_config.h"
+#include "gpu_acc/metal/count_distinct/ob_gpu_count_distinct.h"
+#include "gpu_acc/metal/vector/ob_metal_l2.h"
+#include "share/vector/ob_fixed_length_base.h"
+#include "lib/container/ob_array.h"
+#include "lib/allocator/page_arena.h"
+#endif
 
 namespace oceanbase
 {
@@ -648,9 +656,218 @@ public:
     } else if (OB_ISNULL(extra) || !extra->is_inited()) {
       ret = OB_ERR_UNEXPECTED;
       SQL_LOG(WARN, "invalid null extra or extra is not inited", K(ret), K(agg_col_id), KP(extra));
-    } else if (OB_FAIL(extra->insert_row_for_batch(param_exprs, bound.end(), &skip,
-                                                   bound.start()))) {
-      SQL_LOG(WARN, "add batch rows failed", K(ret));
+    } else {
+      bool gpu_handled = false;
+#ifdef __APPLE__
+      if (!gpu_collecting_) {
+        bool metal_ready = gpu_acc::vector_metal::is_metal_ready();
+        bool not_in_rollup = !agg_ctx.has_rollup_;
+        int param_exprs_count = param_exprs.count();
+        
+        if (metal_ready && not_in_rollup && param_exprs_count == 1) {
+          ObExpr *expr = param_exprs.at(0);
+          ObObjType obj_type = expr->datum_meta_.type_;
+          if (ob_is_int_tc(obj_type) || ob_is_uint_tc(obj_type)) {
+            gpu_dtype_ = gpu_acc::GpuDataType::INT64;
+            gpu_collecting_ = true;
+          } else if (ob_is_double_type(obj_type) || ob_is_float_type(obj_type)) {
+            gpu_dtype_ = gpu_acc::GpuDataType::DOUBLE;
+            gpu_collecting_ = true;
+          } else if (ob_is_string_tc(obj_type)) {
+            gpu_dtype_ = gpu_acc::GpuDataType::STRING;
+            gpu_collecting_ = true;
+          }
+        }
+        if (OB_UNLIKELY(!gpu_collecting_ && param_exprs.count() == 1)) {
+          const char *metal_err = gpu_acc::get_gpu_count_distinct_init_error();
+          SQL_LOG(WARN, "count distinct GPU path not taken", K(metal_ready),
+              "metal_err", OB_NOT_NULL(metal_err) ? metal_err : "");
+        }
+      }
+      if (gpu_collecting_) {
+        if (gpu_stream_ == nullptr) {
+          gpu_stream_ = gpu_acc::gpu_count_distinct_stream_create(gpu_dtype_);
+          if (gpu_stream_ == nullptr) {
+            gpu_collecting_ = false;
+          } else if (!gpu_buf_allocator_set_) {
+            common::ObIAllocator &alloc = agg_ctx.allocator_;
+            common::ModulePageAllocator page_alloc(alloc, lib::ObLabel("GPU_CNT_DIST"));
+            gpu_int_buf_.set_block_allocator(page_alloc);
+            gpu_double_buf_.set_block_allocator(page_alloc);
+            gpu_str_flat_buf_.set_block_allocator(page_alloc);
+            gpu_str_offsets_.set_block_allocator(page_alloc);
+            gpu_str_lengths_.set_block_allocator(page_alloc);
+            gpu_buf_allocator_set_ = true;
+          }
+        }
+        if (gpu_stream_ == nullptr) {
+          /* fall through to CPU path below */
+        } else {
+        ObExpr *expr = param_exprs.at(0);
+        ObIVector *vec = expr->get_vector(agg_ctx.eval_ctx_);
+        const bool is_fixed = (vec->get_format() == VEC_FIXED);
+        common::ObBitmapNullVectorBase *vec_base =
+            is_fixed ? static_cast<common::ObBitmapNullVectorBase *>(vec) : nullptr;
+        const sql::ObBitVector *nulls = vec_base ? vec_base->get_nulls() : nullptr;
+        const bool has_null = vec_base ? vec_base->has_null() : false;
+        struct IncludedChecker {
+          const sql::ObBitVector &skip_ref;
+          const sql::ObBitVector *nulls_ptr;
+          bool has_null_val;
+          ObIVector *vec_ptr;
+          bool is_fixed_val;
+          bool check(int64_t i) const {
+            bool out = false;
+            if (skip_ref.at(i)) {
+              out = false;
+            } else if (is_fixed_val) {
+              out = !has_null_val || (nulls_ptr != nullptr && !nulls_ptr->at(i));
+            } else {
+              out = !vec_ptr->is_null(i);
+            }
+            return out;
+          }
+        };
+        IncludedChecker included_checker = { skip, nulls, has_null, vec, is_fixed };
+
+        if (gpu_dtype_ == gpu_acc::GpuDataType::INT64
+            || gpu_dtype_ == gpu_acc::GpuDataType::DOUBLE) {
+          if (is_fixed && gpu_dtype_ == gpu_acc::GpuDataType::INT64) {
+            const int64_t *raw = reinterpret_cast<const int64_t *>(
+                static_cast<ObFixedLengthBase *>(vec)->get_data());
+            int64_t i = bound.start();
+            while (i < bound.end()) {
+              while (i < bound.end() && !included_checker.check(i)) { i++; }
+              if (i >= bound.end()) { break; }
+              int64_t run_start = i;
+              while (i < bound.end() && included_checker.check(i)) { i++; }
+              for (int64_t k = run_start; k < i && OB_SUCC(ret); k++) {
+                ret = gpu_int_buf_.push_back(raw[k]);
+              }
+            }
+            if (OB_SUCC(ret)
+                && static_cast<int64_t>(gpu_int_buf_.count()) * static_cast<int64_t>(sizeof(int64_t))
+                    >= gpu_acc::GPU_COUNT_DISTINCT_FLUSH_BYTES) {
+              (void)gpu_acc::gpu_count_distinct_stream_insert_int64(
+                  gpu_stream_, gpu_int_buf_.get_data(),
+                  static_cast<int64_t>(gpu_int_buf_.count()));
+              gpu_int_buf_.reuse();
+            }
+          } else if (is_fixed && gpu_dtype_ == gpu_acc::GpuDataType::DOUBLE) {
+            if (ob_is_float_type(expr->datum_meta_.type_)) {
+              const float *raw = reinterpret_cast<const float *>(
+                  static_cast<ObFixedLengthBase *>(vec)->get_data());
+              int64_t i = bound.start();
+              while (i < bound.end()) {
+                while (i < bound.end() && !included_checker.check(i)) { i++; }
+                if (i >= bound.end()) { break; }
+                int64_t run_start = i;
+                while (i < bound.end() && included_checker.check(i)) { i++; }
+                (void)gpu_double_buf_.reserve(
+                    gpu_double_buf_.count() + (i - run_start));
+                for (int64_t k = run_start; k < i && OB_SUCC(ret); k++) {
+                  ret = gpu_double_buf_.push_back(static_cast<double>(raw[k]));
+                }
+              }
+            } else {
+              const double *raw = reinterpret_cast<const double *>(
+                  static_cast<ObFixedLengthBase *>(vec)->get_data());
+              int64_t i = bound.start();
+              while (i < bound.end()) {
+                while (i < bound.end() && !included_checker.check(i)) { i++; }
+                if (i >= bound.end()) { break; }
+                int64_t run_start = i;
+                while (i < bound.end() && included_checker.check(i)) { i++; }
+                for (int64_t k = run_start; k < i && OB_SUCC(ret); k++) {
+                  ret = gpu_double_buf_.push_back(raw[k]);
+                }
+              }
+            }
+            if (OB_SUCC(ret)
+                && static_cast<int64_t>(gpu_double_buf_.count())
+                        * static_cast<int64_t>(sizeof(double))
+                    >= gpu_acc::GPU_COUNT_DISTINCT_FLUSH_BYTES) {
+              (void)gpu_acc::gpu_count_distinct_stream_insert_double(
+                  gpu_stream_, gpu_double_buf_.get_data(),
+                  static_cast<int64_t>(gpu_double_buf_.count()));
+              gpu_double_buf_.reuse();
+            }
+          } else {
+            for (int64_t i = bound.start(); i < bound.end(); i++) {
+              if (!included_checker.check(i)) { continue; }
+              if (gpu_dtype_ == gpu_acc::GpuDataType::INT64) {
+                ret = gpu_int_buf_.push_back(
+                    *reinterpret_cast<const int64_t *>(vec->get_payload(i)));
+              } else {
+                if (ob_is_float_type(expr->datum_meta_.type_)) {
+                  ret = gpu_double_buf_.push_back(static_cast<double>(
+                      *reinterpret_cast<const float *>(vec->get_payload(i))));
+                } else {
+                  ret = gpu_double_buf_.push_back(
+                      *reinterpret_cast<const double *>(vec->get_payload(i)));
+                }
+              }
+            }
+            if (OB_SUCC(ret) && gpu_dtype_ == gpu_acc::GpuDataType::INT64
+                && static_cast<int64_t>(gpu_int_buf_.count())
+                        * static_cast<int64_t>(sizeof(int64_t))
+                    >= gpu_acc::GPU_COUNT_DISTINCT_FLUSH_BYTES) {
+              (void)gpu_acc::gpu_count_distinct_stream_insert_int64(
+                  gpu_stream_, gpu_int_buf_.get_data(),
+                  static_cast<int64_t>(gpu_int_buf_.count()));
+              gpu_int_buf_.reuse();
+            } else if (OB_SUCC(ret) && gpu_dtype_ == gpu_acc::GpuDataType::DOUBLE
+                && static_cast<int64_t>(gpu_double_buf_.count())
+                        * static_cast<int64_t>(sizeof(double))
+                    >= gpu_acc::GPU_COUNT_DISTINCT_FLUSH_BYTES) {
+              (void)gpu_acc::gpu_count_distinct_stream_insert_double(
+                  gpu_stream_, gpu_double_buf_.get_data(),
+                  static_cast<int64_t>(gpu_double_buf_.count()));
+              gpu_double_buf_.reuse();
+            }
+          }
+        } else {
+          for (int64_t i = bound.start(); i < bound.end() && OB_SUCC(ret); i++) {
+            if (!included_checker.check(i)) { continue; }
+            const char *payload = nullptr;
+            ObLength len = 0;
+            vec->get_payload(i, payload, len);
+            ret = gpu_str_offsets_.push_back(
+                static_cast<uint32_t>(gpu_str_flat_buf_.count()));
+            if (OB_SUCC(ret)) {
+              ret = gpu_str_lengths_.push_back(static_cast<uint32_t>(len));
+            }
+            for (ObLength j = 0; OB_SUCC(ret) && j < len; j++) {
+              ret = gpu_str_flat_buf_.push_back(payload[j]);
+            }
+            if (OB_SUCC(ret) && static_cast<uint32_t>(len) > gpu_max_str_len_) {
+              gpu_max_str_len_ = static_cast<uint32_t>(len);
+            }
+          }
+          bool str_flush = (gpu_str_offsets_.count() >= gpu_acc::GPU_COUNT_DISTINCT_FLUSH_ROWS)
+              || (static_cast<size_t>(gpu_str_flat_buf_.count()) >= gpu_acc::GPU_COUNT_DISTINCT_STR_FLUSH_BYTES);
+          if (str_flush && !gpu_str_offsets_.empty()) {
+            gpu_acc::GpuStringData str_data;
+            str_data.flat_buffer = gpu_str_flat_buf_.get_data();
+            str_data.offsets = gpu_str_offsets_.get_data();
+            str_data.lengths = gpu_str_lengths_.get_data();
+            str_data.max_str_len = gpu_max_str_len_;
+            (void)gpu_acc::gpu_count_distinct_stream_insert_string(
+                gpu_stream_, str_data, static_cast<int64_t>(gpu_str_offsets_.count()));
+            gpu_str_flat_buf_.reuse();
+            gpu_str_offsets_.reuse();
+            gpu_str_lengths_.reuse();
+            gpu_max_str_len_ = 0;
+          }
+        }
+        gpu_handled = true;
+        }
+      }
+#endif
+      if (!gpu_handled && OB_FAIL(extra->insert_row_for_batch(param_exprs, bound.end(), &skip,
+                                                     bound.start()))) {
+        SQL_LOG(WARN, "add batch rows failed", K(ret));
+      }
     }
     return ret;
   }
@@ -712,7 +929,59 @@ public:
     agg_ctx.get_agg_payload(agg_col_id, group_id, agg_cell, agg_cell_len);
     OB_ASSERT(agg_ != NULL);
     sql::ObEvalCtx &ctx = agg_ctx.eval_ctx_;
+    bool eval_gpu_done = false;
+#ifdef __APPLE__
+    {
+      bool metal_ready = gpu_acc::vector_metal::is_metal_ready();
+      bool not_in_rollup = !agg_ctx.has_rollup_;
+      bool use_gpu = (metal_ready && not_in_rollup && gpu_collecting_ && gpu_stream_ != nullptr);
+      if (use_gpu) {
+        gpu_acc::GpuCountDistinctResult gpu_result = {};
+        int gpu_rc = 0;
+        if (gpu_dtype_ == gpu_acc::GpuDataType::INT64 && !gpu_int_buf_.empty()) {
+          gpu_rc = gpu_acc::gpu_count_distinct_stream_insert_int64(
+              gpu_stream_, gpu_int_buf_.get_data(),
+              static_cast<int64_t>(gpu_int_buf_.count()));
+        } else if (gpu_dtype_ == gpu_acc::GpuDataType::DOUBLE && !gpu_double_buf_.empty()) {
+          gpu_rc = gpu_acc::gpu_count_distinct_stream_insert_double(
+              gpu_stream_, gpu_double_buf_.get_data(),
+              static_cast<int64_t>(gpu_double_buf_.count()));
+        } else if (gpu_dtype_ == gpu_acc::GpuDataType::STRING && !gpu_str_offsets_.empty()) {
+          gpu_acc::GpuStringData str_data;
+          str_data.flat_buffer = gpu_str_flat_buf_.get_data();
+          str_data.offsets = gpu_str_offsets_.get_data();
+          str_data.lengths = gpu_str_lengths_.get_data();
+          str_data.max_str_len = gpu_max_str_len_;
+          gpu_rc = gpu_acc::gpu_count_distinct_stream_insert_string(
+              gpu_stream_, str_data, static_cast<int64_t>(gpu_str_offsets_.count()));
+        }
+        if (gpu_rc == 0) {
+          gpu_rc = gpu_acc::gpu_count_distinct_stream_finish(gpu_stream_, gpu_result);
+        }
+        gpu_acc::gpu_count_distinct_stream_destroy(gpu_stream_);
+        gpu_stream_ = nullptr;
+        gpu_int_buf_.reuse();
+        gpu_double_buf_.reuse();
+        gpu_str_flat_buf_.reuse();
+        gpu_str_offsets_.reuse();
+        gpu_str_lengths_.reuse();
+        gpu_max_str_len_ = 0;
+        gpu_collecting_ = false;
+        eval_gpu_done = true;
+        if (gpu_rc == 0) {
+          *reinterpret_cast<int64_t *>(const_cast<char *>(agg_cell)) =
+              static_cast<int64_t>(gpu_result.distinct_count);
+          SQL_LOG(WARN, "GPU count distinct succeeded", K(gpu_result.distinct_count),
+              K(gpu_result.elapsed_ms));
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          SQL_LOG(WARN, "GPU count distinct failed", K(gpu_rc));
+        }
+      }
+    }
+#endif
     HashBasedDistinctVecExtraResult *ad_result = agg_ctx.get_distinct_store(agg_col_id, agg_cell);
+    if (!eval_gpu_done) {
     ObAggrInfo &aggr_info = agg_ctx.locate_aggr_info(agg_col_id);
     ObEvalCtx::TempAllocGuard alloc_guard(ctx);
     if (OB_ISNULL(ad_result) || !ad_result->is_inited()) {
@@ -725,8 +994,6 @@ public:
     } else if (agg_ctx.has_rollup_ && group_id > 0) {
       if (group_id > agg_ctx.rollup_context_->start_partial_rollup_idx_
           && group_id <= agg_ctx.rollup_context_->end_partial_rollup_idx_) {
-        // Group id greater than zero in sort based group by must be rollup,
-        // distinct set is sorted and iterated in rollup_process(), rewind here.
         if (OB_FAIL(ad_result->rewind())) {
           SQL_LOG(WARN, "rewind iterator failed", K(ret));
         }
@@ -776,6 +1043,7 @@ public:
     } else if (OB_FAIL(ad_result->brs_holder_.restore())) {
       SQL_LOG(WARN, "restore datum failed", K(ret));
     }
+    }
     return ret;
   }
 
@@ -807,6 +1075,19 @@ public:
     if (agg_ != NULL) {
       agg_->reuse();
     }
+#ifdef __APPLE__
+    if (gpu_stream_ != nullptr) {
+      gpu_acc::gpu_count_distinct_stream_destroy(gpu_stream_);
+      gpu_stream_ = nullptr;
+    }
+    gpu_int_buf_.reuse();
+    gpu_double_buf_.reuse();
+    gpu_str_flat_buf_.reuse();
+    gpu_str_offsets_.reuse();
+    gpu_str_lengths_.reuse();
+    gpu_max_str_len_ = 0;
+    gpu_collecting_ = false;
+#endif
   }
 
   void destroy() override
@@ -815,11 +1096,37 @@ public:
       agg_->destroy();
       agg_ = nullptr;
     }
+#ifdef __APPLE__
+    if (gpu_stream_ != nullptr) {
+      gpu_acc::gpu_count_distinct_stream_destroy(gpu_stream_);
+      gpu_stream_ = nullptr;
+    }
+    gpu_int_buf_.destroy();
+    gpu_double_buf_.destroy();
+    gpu_str_flat_buf_.destroy();
+    gpu_str_offsets_.destroy();
+    gpu_str_lengths_.destroy();
+    gpu_max_str_len_ = 0;
+    gpu_collecting_ = false;
+    gpu_buf_allocator_set_ = false;
+#endif
   }
   TO_STRING_KV("wrapper_type", "distinct", KP_(agg));
 
 private:
   IAggregate *agg_;
+#ifdef __APPLE__
+  bool gpu_collecting_ = false;
+  gpu_acc::GpuDataType gpu_dtype_ = gpu_acc::GpuDataType::INT64;
+  gpu_acc::GpuCountDistinctStream *gpu_stream_ = nullptr;
+  bool gpu_buf_allocator_set_ = false;
+  uint32_t gpu_max_str_len_ = 0;
+  common::ObArray<int64_t> gpu_int_buf_;
+  common::ObArray<double> gpu_double_buf_;
+  common::ObArray<char> gpu_str_flat_buf_;
+  common::ObArray<uint32_t> gpu_str_offsets_;
+  common::ObArray<uint32_t> gpu_str_lengths_;
+#endif
 };
 
 template<typename Aggregate>
