@@ -102,14 +102,17 @@ Before building, please install the required toolchain and dependencies for your
 
 ```bash
 # Clone the repository
+brew install git cmake pkg-config openssl@3 ncurses googletest
+brew install zstd utf8proc thrift re2 brotli
 git clone git@github.com:JasonZhang10086/Geekdb.git
 cd Geekdb
-bash build.sh debug --init --make
+bash build.sh release --init --make
 mkdir ~/seekdb
 mkdir ~/seekdb/bin
-cp build_debug/src/observer/seekdb ~/seekdb/bin
+cp build_release/src/observer/seekdb ~/seekdb/bin
 cd ~/seekdb
 ./bin/seekdb
+mysql -uroot -h127.0.0.1 -P2881
 ```
 
 In this example, the working director is $HOME/seekdb, please use a fresh director for testing, Please see the [Developer Guide](docs/developer-guide/en/README.md) for detailed instructions.
