@@ -1,14 +1,16 @@
 <div align="center">
 
-<picture>
+<!-- <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://mdn.alipayobjects.com/huamei_ytl0i7/afts/img/A*pKqtRILxGioAAAAAQLAAAAgAejCYAQ/original" width="420">
   <source media="(prefers-color-scheme: light)" srcset="https://mdn.alipayobjects.com/huamei_ytl0i7/afts/img/A*6BO4Q6D78GQAAAAAQFAAAAgAejCYAQ/original" width="420">
   <img alt="示意图" src="light-mode.png">
-</picture>
+</picture> -->
 
 ### **🔷 The AI-Native Search Database**
 
 **Unifies vector, text, structured and semi-structured data in a single engine, enabling hybrid search and in-database AI workflows.**
+
+**在一个数据库中融合向量、文本、结构化与半结构化数据能力，并通过内置 AI Functions 支持多模混合搜索与智能推理。**
 
 </div>
 
@@ -27,12 +29,12 @@
     <a href="https://deepwiki.com/oceanbase/seekdb">
         <img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg" />
     </a>
-    <a href="https://discord.gg/74cF8vbNEs">
+    <!-- <a href="https://discord.gg/74cF8vbNEs">
         <img alt="Join Discord" src="https://img.shields.io/badge/Discord-Join%20Chat-5865F2?logo=discord&style=flat-square" />
-    </a>
-    <a href="https://pepy.tech/projects/pylibseekdb">
+    </a> -->
+    <!-- <a href="https://pepy.tech/projects/pylibseekdb">
         <img height="20" alt="Downloads" src="https://static.pepy.tech/badge/pylibseekdb" />
-    </a>
+    </a> -->
     <a href="https://github.com/oceanbase/seekdb/blob/master/LICENSE">
         <img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" />
     </a>
@@ -41,32 +43,35 @@
 
 <div align="center">
 
-**English** | [中文版](README_CN.md)
+
 
 ---
 
 </div>
 
-## 🚀 What is OceanBase seekdb?
+## 🚀 What is OceanBase Geekdb?
 
-**OceanBase seekdb** is an AI-native search database that unifies relational, vector, text, JSON and GIS in a single engine, enabling hybrid search and in-database AI workflows.
+**OceanBase Geekdb** is a distribution built on **OceanBase seekdb** that supports more leading "cool" features on top of SeekDB's foundation.
+
+**GeekDB** 是一个基于 **OceanBase seekdb** 制作的发行版，在 **seekdb** 的基础之上支持了更多领先的「酷」特性。
 
 ---
 
-## 🔥 Why OceanBase seekdb?
+## 🔥 Why OceanBase Geekdb?
 
-| **Feature**              | **seekdb** | **OceanBase** | **Chroma** | **Milvus** | **MySQL&nbsp;9.0**           | **PostgreSQL<br/>+pgvector** | **DuckDB** | **Elasticsearch**                   |
-| ------------------------ |:--------------------:|:-------------:|:----------:|:----------:|:-----------------------:|:----------------------------:|:----------:|:-----------------------------------:|
-| **Embedded**    | ✅                    | ❌             | ✅          | ✅          | ❌<sup>[1]</sup> | ❌                            | ✅          | ❌                                   |
-| **Single-Node** | ✅                    | ✅             | ✅          | ✅          | ✅                       | ✅                            | ✅          | ✅                                   |
-| **Distributed** | ❌                    | ✅             | ❌          | ✅          | ❌                       | ❌                            | ❌          | ✅                                   |
-| **MySQL&nbsp;Compatible**   | ✅                    | ✅             | ❌          | ❌          | ✅                       | ❌                            | ✅          | ❌                                   |
-| **Vector&nbsp;Search**     | ✅                    | ✅             | ✅          | ✅          | ❌                       | ✅                            | ✅          | ✅                                   |
-| **Full-Text&nbsp;Search**    | ✅                    | ✅             | ✅          | ⚠️         | ✅                       | ✅                            | ✅          | ✅                                   |
-| **Hybrid&nbsp;Search** | ✅                    | ✅             | ✅          | ✅          | ❌                       | ⚠️                           | ❌          | ✅                                   |
-| **OLTP**                 | ✅                    | ✅             | ❌          | ❌          | ✅                       | ✅                            | ❌          | ❌                                   |
-| **OLAP**                 | ✅                    | ✅             | ❌          | ❌          | ❌                       | ✅                            | ✅          | ⚠️                                  |
-| **License**  | Apache 2.0           | MulanPubL 2.0 | Apache 2.0 | Apache 2.0 | GPL 2.0                 | PostgreSQL License           | MIT        | AGPLv3<br/>+SSPLv1<br/>+Elastic 2.0 |
+| **Feature**              | **Geekdb** | **seekdb** | **OceanBase** | **Chroma** | **Milvus** | **MySQL&nbsp;9.0**           | **PostgreSQL<br/>+pgvector** | **DuckDB** | **Elasticsearch**                   |
+| ------------------------ |:--------------------:|:--------------------:|:-------------:|:----------:|:----------:|:-----------------------:|:----------------------------:|:----------:|:-----------------------------------:|
+| **Mac GPU Acceleration**    |✅ | ❌ | ❌ |❌ | ❌ | ❌ | ❌| ❌ | ❌ |
+| **Embedded**    | ✅                    | ✅                    | ❌             | ✅          | ✅          | ❌<sup>[1]</sup> | ❌                            | ✅          | ❌                                   |
+| **Single-Node** | ✅                    | ✅                    | ✅             | ✅          | ✅          | ✅                       | ✅                            | ✅          | ✅                                   |
+| **Distributed** | ❌                    | ❌                    | ✅             | ❌          | ✅          | ❌                       | ❌                            | ❌          | ✅                                   |
+| **MySQL&nbsp;Compatible**   | ✅                    | ✅                    | ✅             | ❌          | ❌          | ✅                       | ❌                            | ✅          | ❌                                   |
+| **Vector&nbsp;Search**     | ✅                    | ✅                    | ✅             | ✅          | ✅          | ❌                       | ✅                            | ✅          | ✅                                   |
+| **Full-Text&nbsp;Search**    | ✅                    | ✅                    | ✅             | ✅          | ⚠️         | ✅                       | ✅                            | ✅          | ✅                                   |
+| **Hybrid&nbsp;Search** | ✅                    | ✅                    | ✅             | ✅          | ✅          | ❌                       | ⚠️                           | ❌          | ✅                                   |
+| **OLTP**                 | ✅                    | ✅                    | ✅             | ❌          | ❌          | ✅                       | ✅                            | ❌          | ❌                                   |
+| **OLAP**                 | ✅                    | ✅                    | ✅             | ❌          | ❌          | ❌                       | ✅                            | ✅          | ⚠️                                  |
+| **License**  | Apache 2.0           | Apache 2.0           | MulanPubL 2.0 | Apache 2.0 | Apache 2.0 | GPL 2.0                 | PostgreSQL License           | MIT        | AGPLv3<br/>+SSPLv1<br/>+Elastic 2.0 |
 > [1] Embedded capability is removed in MySQL 8.0
 > - ✅ Supported
 > - ❌ Not Supported
@@ -74,61 +79,40 @@
 
 ## ✨ Key Features
 
-### Build fast + Hybrid search + Multi model
-1. **Build fast:** From prototype to production in minutes: create AI apps using Python, run VectorDBBench on 1C2G.
-2. **Hybrid Search:** Combine vector search, full-text search and relational query in a single statement.
-3. **Multi-Model:** Support relational, vector, text, JSON and GIS in a single engine.
+### Hybrid search + Multi model
+1. **Hybrid Search:** Combine vector search, full-text search and relational query in a single statement.
+2. **Multi-Model:** Support relational, vector, text, JSON and GIS in a single engine.
 
 
 ### AI inside + SQL inside
 1. **AI Inside:** Run embedding, reranking, LLM inference and prompt management inside the database, supporting a complete document-in/data-out RAG workflow.
 2. **SQL Inside:** 	Powered by the proven OceanBase engine, delivering real-time writes and queries with full ACID compliance, and seamless MySQL ecosystem compatibility.
 
-
+### GPU Empowered Vector Index Building/GPU加速向量索引构建
+1. **GPU IVF Index Building:** Build 1 Million rows IVF index on Mac M3 Pro with Metal in 40 seconds. 40秒在Mac M3 Pro上使用Metal构建百万行IVF索引
 
 ---
 
 ## 🎬 Quick Start
 
-### Installation
+### Build from Source
+#### Geekdb supports MacOS with M series Chips and Metal(GPU) available only.
 
-Choose your platform:
-
-<details>
-<summary><b>🐍 Python (Recommended for AI/ML)</b></summary>
+Before building, please install the required toolchain and dependencies for your operating system. See [Install Toolchain](docs/developer-guide/en/toolchain.md) for detailed instructions.
 
 ```bash
-pip install -U pyseekdb
+# Clone the repository
+git clone git@github.com:JasonZhang10086/Geekdb.git
+cd Geekdb
+bash build.sh debug --init --make
+mkdir ~/seekdb
+mkdir ~/seekdb/bin
+cp build_debug/src/observer/seekdb ~/seekdb/bin
+cd ~/seekdb
+./bin/seekdb
 ```
 
-</details>
-
-<details>
-<summary><b>🐳 Docker (Quick Testing)</b></summary>
-
-```bash
-docker run -d \
-  --name seekdb \
-  -p 2881:2881 \
-  -p 2886:2886 \
-  -v ./data:/var/lib/oceanbase \
-  oceanbase/seekdb:latest
-```
-Please refer to the [document](https://github.com/oceanbase/docker-images/blob/main/seekdb/README.md) of this docker image for details.
-
-</details>
-
-<details>
-<summary><b>📦 Binary (Standalone)</b></summary>
-
-```bash
-# Linux
-rpm -ivh seekdb-1.x.x.x-xxxxxxx.el8.x86_64.rpm
-```
-Please replace the version number with the actual RPM package version.
-
-</details>
-
+In this example, the working director is $HOME/seekdb, please use a fresh director for testing, Please see the [Developer Guide](docs/developer-guide/en/README.md) for detailed instructions.
 
 ### 🎯 AI Search Example
 
@@ -369,116 +353,7 @@ Edge devices—from mobile to vehicle and industrial terminals—operate with co
 
 </details>
 
----
 
-## 🌟 Ecosystem & Integrations
-
-<div align="center">
-
-<p>
-    <a href="https://huggingface.co">
-        <img src="https://img.shields.io/badge/HuggingFace-✅-00A67E?style=flat-square&logo=huggingface" alt="HuggingFace" />
-    </a>
-    <a href="https://github.com/langchain-ai/langchain/pulls?q=is%3Apr+is%3Aclosed+oceanbase">
-        <img src="https://img.shields.io/badge/LangChain-✅-00A67E?style=flat-square&logo=langchain" alt="LangChain" />
-    </a>
-    <a href="https://github.com/langchain-ai/langchain/pulls?q=is%3Apr+is%3Aclosed+oceanbase">
-        <img src="https://img.shields.io/badge/LangGraph-✅-00A67E?style=flat-square&logo=langgrap" alt="LangGraph" />
-    </a>
-    <a href="https://github.com/langgenius/dify/pulls?q=is%3Apr+is%3Aclosed+oceanbase">
-        <img src="https://img.shields.io/badge/Dify-✅-00A67E?style=flat-square&logo=dify" alt="Dify" />
-    </a>
-    <a href="https://github.com/coze-dev/coze-studio/pulls?q=is%3Apr+oceanbase+is%3Aclosed">
-        <img src="https://img.shields.io/badge/Coze-✅-00A67E?style=flat-square&logo=coze" alt="Coze" />
-    </a>
-    <a href="https://github.com/run-llama/llama_index/pulls?q=is%3Apr+is%3Aclosed+oceanbase">
-        <img src="https://img.shields.io/badge/LlamaIndex-✅-00A67E?style=flat-square&logo=llama" alt="LlamaIndex" />
-    </a>
-    <a href="https://firecrawl.dev">
-        <img src="https://img.shields.io/badge/Firecrawl-✅-00A67E?style=flat-square&logo=firecrawl" alt="Firecrawl" />
-    </a>
-    <a href="https://github.com/labring/FastGPT/pulls?q=is%3Apr+oceanbase+is%3Aclosed">
-        <img src="https://img.shields.io/badge/FastGPT-✅-00A67E?style=flat-square&logo=FastGPT" alt="FastGPT" />
-    </a>
-    <a href="https://db-gpt.io">
-        <img src="https://img.shields.io/badge/DB--GPT-✅-00A67E?style=flat-square&logo=db-gpt" alt="DB-GPT" />
-    </a>
-    <a href="https://github.com/camel-ai/camel/pulls?q=is%3Apr+oceanbase+is%3Aclosed">
-        <img src="https://img.shields.io/badge/camel-✅-00A67E?style=flat-square&logo=camel" alt="Camel-AI" />
-    </a>
-    <a href="https://github.com/alibaba/spring-ai-alibaba">
-        <img src="https://img.shields.io/badge/spring--ai--alibaba-✅-00A67E?style=flat-square&logo=spring" alt="spring-ai-alibaba" />
-    </a>
-    <a href="https://developers.cloudflare.com/workers-ai">
-        <img src="https://img.shields.io/badge/Cloudflare%20Workers%20AI-✅-00A67E?style=flat-square&logo=cloudflare" alt="Cloudflare Workers AI" />
-    </a>
-    <a href="https://jina.ai">
-        <img src="https://img.shields.io/badge/Jina%20AI-✅-00A67E?style=flat-square&logo=jina" alt="Jina AI" />
-    </a>
-    <a href="https://ragas.io">
-        <img src="https://img.shields.io/badge/Ragas-✅-00A67E?style=flat-square&logo=ragas" alt="Ragas" />
-    </a>
-    <a href="https://jxnl.github.io/instructor">
-        <img src="https://img.shields.io/badge/Instructor-✅-00A67E?style=flat-square&logo=instructor" alt="Instructor" />
-    </a>
-    <a href="https://baseten.co">
-        <img src="https://img.shields.io/badge/Baseten-✅-00A67E?style=flat-square&logo=baseten" alt="Baseten" />
-    </a>
-</p>
-
-<br/>
-
-Please refer to the [User Guide](https://www.oceanbase.ai/docs/seekdb-overview/) for more details.
-
-
-</div>
-
----
-
-
-## 🤝 Community & Support
-
-<div align="center">
-
-<p>
-    <a href="https://discord.gg/74cF8vbNEs">
-        <img src="https://img.shields.io/badge/Discord-Join%20Chat-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord" />
-    </a>
-    <a href="https://github.com/oceanbase/seekdb/discussions">
-        <img src="https://img.shields.io/badge/GitHub%20Discussion-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Discussion" />
-    </a>
-    <a href="https://ask.oceanbase.com/">
-        <img src="https://img.shields.io/badge/Forum-Chinese%20Community-FF6900?style=for-the-badge" alt="Forum" />
-    </a>
-</p>
-
-</div>
-
----
-
-## 🛠️ Development
-
-### Build from Source
-
-Before building, please install the required toolchain and dependencies for your operating system. See [Install Toolchain](docs/developer-guide/en/toolchain.md) for detailed instructions.
-
-```bash
-# Clone the repository
-git clone https://github.com/oceanbase/seekdb.git
-cd seekdb
-bash build.sh debug --init --make
-mkdir ~/seekdb
-mkdir ~/seekdb/bin
-cp build_debug/src/observer/seekdb ~/seekdb/bin
-cd ~/seekdb
-./bin/seekdb
-```
-
-In this example, the working director is $HOME/seekdb, please use a fresh director for testing, Please see the [Developer Guide](docs/developer-guide/en/README.md) for detailed instructions.
-
-### Contributing
-
-We welcome contributions! See our [Contributing Guide](CONTRIBUTING.md) to get started.
 
 ---
 
