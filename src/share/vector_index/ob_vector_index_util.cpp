@@ -1394,6 +1394,16 @@ int ObVectorIndexUtil::check_ivf_lob_inrow_threshold(
   return ret;
 }
 
+bool ObVectorIndexUtil::should_set_max_lob_inrow_threshold_for_async_index(
+    const ObTableSchema &tbl_schema,
+    const ObIndexType vec_index_type,
+    const ObString &index_params)
+{
+  return share::schema::is_vec_hnsw_index(vec_index_type)
+      && tbl_schema.is_heap_organized_table()
+      && ObVectorIndexUtil::is_sync_mode_async(index_params, true /* is_hnsw_heap_table */);
+}
+
 int ObVectorIndexUtil::check_table_has_vector_index(const ObTableSchema &data_table_schema, ObSchemaGetterGuard &schema_guard,
     bool &has_vec_index)
 {
@@ -3538,11 +3548,12 @@ int ObVectorIndexUtil::check_index_param(
           LOG_WARN("hnsw vector index sync_mode does not support MANUAL",
             K(ret), K(sync_interval_type));
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "hnsw vector index sync_mode MANUAL is");
-        } else if (!type_hybrid_vec_is_set && !tbl_schema.is_heap_organized_table() && sync_mode_is_set) {
+        } else if (!type_hybrid_vec_is_set && !tbl_schema.is_heap_organized_table() && sync_mode_is_set
+                   && sync_interval_type == ObVectorIndexSyncIntervalType::VSIT_NUMERIC) {
           ret = OB_NOT_SUPPORTED;
-          LOG_WARN("hnsw vector index on non-heap table does not support sync_mode parameter",
-            K(ret), K(tbl_schema.get_table_id()));
-          LOG_USER_ERROR(OB_NOT_SUPPORTED, "hnsw vector index on non-heap table setting sync_mode is");
+          LOG_WARN("hnsw vector index on non-heap table does not support sync_mode=ASYNC",
+            K(ret), K(tbl_schema.get_table_id()), K(sync_interval_type));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "hnsw vector index on non-heap table setting sync_mode=ASYNC is");
         }
       }
       if (OB_FAIL(ret)) {

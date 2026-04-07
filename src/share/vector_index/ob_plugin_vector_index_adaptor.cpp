@@ -198,6 +198,8 @@ int ObVectorQueryAdaptorResultContext::init_bitmaps()
   if (OB_ISNULL(tmp_allocator_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("ctx allocator invalid.", K(ret));
+  } else if (OB_NOT_NULL(bitmaps_)) {
+    // bitmap has already been initialized
   } else {
     ObVectorIndexRoaringBitMap *bitmaps = nullptr;
     if (OB_ISNULL(bitmaps = static_cast<ObVectorIndexRoaringBitMap*>
@@ -205,6 +207,8 @@ int ObVectorQueryAdaptorResultContext::init_bitmaps()
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("failed to create vbitmap msg", K(ret));
     } else {
+      bitmaps->insert_bitmap_ = nullptr;
+      bitmaps->delete_bitmap_ = nullptr;
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPC"));
       ROARING_TRY_CATCH(bitmaps->insert_bitmap_ = roaring::api::roaring64_bitmap_create());
       if (OB_SUCC(ret) && OB_ISNULL(bitmaps->insert_bitmap_)) {
@@ -221,7 +225,25 @@ int ObVectorQueryAdaptorResultContext::init_bitmaps()
         bitmaps->delete_bitmap_ = nullptr;
       }
     }
-    bitmaps_ = bitmaps;
+    if (OB_FAIL(ret)) {
+      if (OB_NOT_NULL(bitmaps)) {
+        if (OB_NOT_NULL(bitmaps->insert_bitmap_)) {
+          lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPA"));
+          roaring::api::roaring64_bitmap_free(bitmaps->insert_bitmap_);
+          bitmaps->insert_bitmap_ = nullptr;
+        }
+        if (OB_NOT_NULL(bitmaps->delete_bitmap_)) {
+          lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPB"));
+          roaring::api::roaring64_bitmap_free(bitmaps->delete_bitmap_);
+          bitmaps->delete_bitmap_ = nullptr;
+        }
+        tmp_allocator_->free(bitmaps);
+        bitmaps = nullptr;
+      }
+      bitmaps_ = nullptr;
+    } else {
+      bitmaps_ = bitmaps;
+    }
   }
   return ret;
 }
@@ -2556,7 +2578,7 @@ int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status_async(
         OB_FAIL(ctx->init_bitmaps())) {
       LOG_WARN("failed to init ctx bitmaps.", K(ret));
     } else {
-      ret = complete_index_mem_data_incremental(ctx, ls_id, i_vids);
+      ret = complete_index_mem_data_incremental(ctx, ls_id, query_scn, i_vids);
       if (OB_FAIL(ret)) {
         LOG_WARN("failed to complete index mem data incrementally", K(ret), K(vbitmap_data_->scn_));
       } else {
@@ -2887,6 +2909,7 @@ int ObPluginVectorIndexAdaptor::complete_index_mem_data(SCN read_scn,
 
 int ObPluginVectorIndexAdaptor::complete_index_mem_data_incremental(ObVectorQueryAdaptorResultContext *ctx,
                                                                    ObLSID ls_id,
+                                                                   SCN query_scn,
                                                                    ObArray<uint64_t> &i_vids)
 {
   INIT_SUCC(ret);
@@ -3002,19 +3025,18 @@ int ObPluginVectorIndexAdaptor::complete_index_mem_data_incremental(ObVectorQuer
               LOG_WARN("get next row failed.", K(ret));
             }
           } else {
-            if (OB_FAIL(add_datum_row_into_array(datum_row, i_vids, d_vids))) {
+            // Only process rows up to query snapshot (index_id_table PK SCN).
+            uint64_t row_scn_val = datum_row->storage_datums_[0].get_uint64();
+            SCN row_scn;
+            if (OB_FAIL(row_scn.convert_for_inner_table_field(row_scn_val))) {
+              LOG_WARN("failed to convert row scn", K(ret), K(row_scn_val));
+            } else if (row_scn > query_scn) {
+              // Skip rows newer than query snapshot.
+            } else if (OB_FAIL(add_datum_row_into_array(datum_row, i_vids, d_vids))) {
               LOG_WARN("failed to add vid into array.", K(ret), KP(datum_row));
-            } else {
-              // Track max SCN from rows (storage_datums_[0] is scn column); use it for update
-              // Reverse scan yields rows high-to-low, so "last row" = min SCN; we use max SCN
-              // to correctly record "read up to" for next incremental
-              uint64_t row_scn_val = datum_row->storage_datums_[0].get_uint64();
-              SCN row_scn;
-              if (OB_FAIL(row_scn.convert_for_inner_table_field(row_scn_val))) {
-                LOG_WARN("failed to convert row scn", K(ret), K(row_scn_val));
-              } else if (row_scn > last_row_scn) {
-                last_row_scn = row_scn;
-              }
+            } else if (row_scn > last_row_scn) {
+              // Track max SCN from merged rows for next incremental progress.
+              last_row_scn = row_scn;
             }
           }
         }
@@ -3093,7 +3115,7 @@ int ObPluginVectorIndexAdaptor::refresh_bitmap_background()
   ObArray<uint64_t> i_vids;
   if (OB_FAIL(ctx.init_bitmaps())) {
     LOG_WARN("failed to init bitmaps for background bitmap refresh", K(ret));
-  } else if (OB_FAIL(complete_index_mem_data_incremental(&ctx, share::SYS_LS, i_vids))) {
+  } else if (OB_FAIL(complete_index_mem_data_incremental(&ctx, share::SYS_LS, SCN::max_scn(), i_vids))) {
     LOG_WARN("background bitmap refresh failed", K(ret), K(vbitmap_tablet_id_));
   }
   return ret;
@@ -4166,7 +4188,17 @@ int ObPluginVectorIndexAdaptor::query_result(ObLSID &ls_id,
           LOG_INFO("query result need refresh adapter, ls leader",
               K(ret), K(ls_id), K(ctx->get_ls_leader()), K(snapshot_tablet_id_), K(get_snapshot_key_prefix()), K(row->storage_datums_[0].get_string()));
         } else if (OB_FAIL(deserialize_snap_data(query_cond, row))) {
-          LOG_WARN("failed to deserialize snap data", K(ret));
+          if (ret == OB_ERR_VSAG_RETURN_ERROR) {
+            // snapshot data may be transiently incomplete under concurrent DDL/DML;
+            // trigger refresh path and let upper layer retry with refreshed memdata.
+            ctx->status_ = PVQ_REFRESH;
+            ret = OB_SUCCESS;
+            LOG_INFO("deserialize snap data got vsag transient error, mark refresh",
+                K(ls_id), K(snapshot_tablet_id_), K(get_snapshot_key_prefix()),
+                K(row->storage_datums_[0].get_string()));
+          } else {
+            LOG_WARN("failed to deserialize snap data", K(ret));
+          }
         }
       }
     }

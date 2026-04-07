@@ -50,7 +50,6 @@
 #include "share/schema/ob_table_param.h"
 #include "lib/time/ob_time_utility.h"
 #include "share/ob_server_struct.h"
-#include "share/ob_debug_sync.h"
 
 namespace oceanbase
 {
@@ -215,9 +214,6 @@ int ObCSAsyncIndexProcessor::process(common::ObIArray<ObCSRow> &rows)
     }
 
     // Step 2 — for each tablet group: batch insert into index_id_table, then write into vsag
-    if (groups.count() > 0) {
-      DEBUG_SYNC(CS_ASYNC_VECTOR_INDEX_BEFORE_APPLY);
-    }
     for (int64_t gi = 0; OB_SUCC(ret) && gi < groups.count(); ++gi) {
       TabletEventGroup &g = groups.at(gi);
       if (g.events_.count() <= 0) {
@@ -884,16 +880,11 @@ int ObCSAsyncIndexProcessor::set_das_insert_context_(const common::ObIArray<ObAS
       ret = common::OB_ERR_UNEXPECTED;
       LOG_WARN("Invalid vbitmap_tablet_id from schema", K(ret), K(vec_info.index_id_table_id_));
     } else {
-      // Aux table tablets (e.g. 1152921504606846978) are in user LS (1001), not SYS_LS.
-      // Using wrong ls_id causes OB_INVALID_ARGUMENT in DAS insert.
-      if (OB_NOT_NULL(GCTX.sql_proxy_) &&
-          OB_SUCC(ObTabletToLSTableOperator::get_ls_by_tablet(*GCTX.sql_proxy_, tenant_id, vbitmap_tablet_id, ls_id))) {
-            insert_op->set_tablet_id(vbitmap_tablet_id);
-            insert_op->set_ls_id(ls_id);
-      }
+      insert_op->set_tablet_id(vbitmap_tablet_id);
+      insert_op->set_ls_id(ls_id);
     }
 
-    if (OB_SUCC(ret) && ls_id.is_valid()) {
+    if (OB_SUCC(ret)) {
       void *snapshot_buf = allocator.alloc(sizeof(transaction::ObTxReadSnapshot));
       if (OB_ISNULL(snapshot_buf)) {
         ret = common::OB_ALLOCATE_MEMORY_FAILED;
@@ -1264,6 +1255,28 @@ int ObCSPluginAsyncIndex::commit()
   if (!is_inited_) {
     ret = common::OB_NOT_INIT;
     LOG_WARN("ObCSPluginAsyncIndex not inited", K(ret));
+  } else {
+    // Periodically trigger GC of fallback schema cache to prevent
+    // TenaSchMgrForLi arena memory leak.
+    // At commit() time all process() calls have completed and all
+    // schema_guard handles are released (ref_cnt == 0), so GC can
+    // evict every fallback cache entry and reset the arena.
+    static int64_t last_gc_time = 0;
+    const int64_t GC_INTERVAL_US = 30L * 1000L * 1000L; // 30 seconds
+    const int64_t now = common::ObTimeUtility::current_time();
+    if (now - ATOMIC_LOAD(&last_gc_time) > GC_INTERVAL_US) {
+      ATOMIC_STORE(&last_gc_time, now);
+      schema::ObMultiVersionSchemaService *schema_service =
+          MTL(schema::ObTenantSchemaService *) != nullptr
+              ? MTL(schema::ObTenantSchemaService *)->get_schema_service()
+              : nullptr;
+      if (OB_NOT_NULL(schema_service)) {
+        int tmp_ret = OB_SUCCESS;
+        if (OB_TMP_FAIL(schema_service->try_eliminate_schema_mgr())) {
+          LOG_WARN("try_eliminate_schema_mgr for fallback gc failed", K(tmp_ret));
+        }
+      }
+    }
   }
   return ret;
 }
