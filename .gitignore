@@ -109,10 +109,6 @@ cmake-build-release
 ## OSX dir files
 .DS_Store
 
-############# deps #############
-deps/3rd_party
-deps/usr
-
 ############# src #############
 src/.settings/
 src/client/*
@@ -396,6 +392,11 @@ deps/oblib/src/grpc/*.pb.h
 deps/oblib/src/grpc/*.pb.cc
 deps/oblib/src/grpc/*.pb.cpp
 deps/3rd
+deps/3rd_party
+deps/usr
+win_deps_archives/
+win_deps.zip
+win_deps/
 
 ############# test #############
 test/tmp
