@@ -428,7 +428,7 @@ int ObDDLService::fork_table(const obrpc::ObForkTableArg &fork_table_arg,
             LOG_WARN("inner connection is null", KR(ret));
           } else if (OB_FAIL(transaction::tablelock::ObInnerConnectionLockUtil::lock_table(
                          tenant_id, src_table_schema->get_table_id(),
-                         transaction::tablelock::EXCLUSIVE, lock_timeout_us, iconn))) {
+                         transaction::tablelock::SHARE, lock_timeout_us, iconn))) {
             LOG_WARN("fail to lock source table for async index sync", KR(ret),
                      K(tenant_id), "table_id", src_table_schema->get_table_id());
           } else if (OB_FAIL(ObChangeStreamMgr::wait_refresh_scn(
