@@ -16,12 +16,6 @@
 
 #define USING_LOG_PREFIX LIB
 
-#ifdef _WIN32
-#ifndef OB_BUILD_CDC_DISABLE_VSAG
-#define OB_BUILD_CDC_DISABLE_VSAG
-#endif
-#endif
-
 #include "ob_vsag_adaptor.h"
 #include <map>
 #ifndef OB_BUILD_CDC_DISABLE_VSAG
