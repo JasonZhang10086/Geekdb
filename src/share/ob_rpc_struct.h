@@ -9007,23 +9007,7 @@ public:
   common::ObSArray<ObTabletSplitMdsUserData> split_datas_;
 };
 
-struct ObSyncRewriteRuleArg
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObSyncRewriteRuleArg(): tenant_id_(common::OB_INVALID_TENANT_ID)
-  {}
-  ~ObSyncRewriteRuleArg() {}
-  int assign(const ObSyncRewriteRuleArg &other)
-  {
-    tenant_id_ = other.tenant_id_;
-    return common::OB_SUCCESS;
-  }
-  bool is_valid() const { return common::OB_INVALID_TENANT_ID != tenant_id_; }
-  TO_STRING_KV(K_(tenant_id));
 
-  uint64_t tenant_id_;
-};
 
 struct ObInitTenantConfigArg
 {
