@@ -192,8 +192,7 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
 
   // flush opt stat monitoring info rpc
   RPC_PROCESSOR(ObFlushLocalOptStatMonitoringInfoP, gctx_);
-  // send bloom filter
-  RPC_PROCESSOR(ObSendBloomFilterP);
+
   // GC check member list
   RPC_PROCESSOR(ObQueryLSIsValidMemberP, gctx_);
 
@@ -221,8 +220,6 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObLobQueryP, gctx_.bandwidth_throttle_);
   //standby switchover/failover
   RPC_PROCESSOR(ObRpcGetLSSyncScnP, gctx_);
-
-  RPC_PROCESSOR(ObSyncRewriteRulesP, gctx_);
 
   RPC_PROCESSOR(ObNetEndpointRegisterP, gctx_);
   RPC_PROCESSOR(ObNetEndpointPredictIngressP, gctx_);

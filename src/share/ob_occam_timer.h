@@ -80,7 +80,7 @@ class ObOccamTimerTask : public ObTimeWheelTask
     need_delete_(need_delete),
     schedule_time_(schedule_time) {}
     bool operator()() {
-      TIMEGUARD_INIT(OCCAM, 1_s, 30_s);
+      TIMEGUARD_INIT(OCCAM, 1_s);
       bool stop_flag = true;
       {
         ObSharedGuard<ObFunction<bool()>> func_shared_ptr = function_.upgrade();

@@ -42,6 +42,7 @@ target_include_directories(
   $<$<PLATFORM_ID:Windows>:${VCPKG_INCLUDE_DIR}/mysql/mariadb>
   $<$<PLATFORM_ID:Windows>:${VCPKG_INCLUDE_DIR}/mysql/mysql>
   $<$<PLATFORM_ID:Windows>:${SQLITE_COMPAT_DIR}>
+  $<$<PLATFORM_ID:Windows>:${OB_VSAG_DIR}/include>
   ${DEVTOOLS_DIR}
   ${DEVTOOLS_DIR}/include
   ${DEP_DIR}/include/apr-1/
@@ -120,7 +121,8 @@ if (OB_USE_CLANG)
       -Wno-microsoft-cpp-macro -Wno-unused-exception-parameter -Wno-unused-template -Wno-tautological-value-range-compare
       -Wno-tautological-unsigned-enum-zero-compare -Wno-microsoft-template -Wno-format-nonliteral -Wno-c++20-compat
       -Wno-dtor-name -Wno-unused-member-function -Wno-string-conversion -Wno-declaration-after-statement -Wno-implicit-function-declaration
-      -Wno-incompatible-pointer-types-discards-qualifiers -Wno-gnu-case-range)
+      -Wno-incompatible-pointer-types-discards-qualifiers -Wno-gnu-case-range
+      -Wno-duplicate-enum)
   else()
     set(OBLIB_COMPILE_DEFINITIONS -fno-strict-aliasing -fno-omit-frame-pointer ${MARCH_CFLAGS} ${MTUNE_CFLAGS}
       -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS -D_NO_EXCEPTION

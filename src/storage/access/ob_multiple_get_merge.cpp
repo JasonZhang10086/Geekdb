@@ -232,9 +232,8 @@ int ObMultipleGetMerge::inner_get_next_row(ObDatumRow &row)
             STORAGE_LOG(DEBUG, "Success to merge get row, ", KP(this), K(fuse_row), K(get_row_range_idx_), K(fuse_row.group_idx_));
           }
           break;
-        } else if (fuse_row.row_flag_.is_delete()
-                   && access_ctx_->query_flag_.skip_4377_for_async_index_lookup()) {
-          // Async vector index: index may have stale entries for deleted rows, skip and continue
+        } else if (access_ctx_->query_flag_.skip_4377_for_async_index_lookup()) {
+          // Async vector index: index may have stale entries for deleted/non-existent rows, skip and continue
           continue;
         } else {
           // When the index lookups the rowkeys from the main table, it should exists

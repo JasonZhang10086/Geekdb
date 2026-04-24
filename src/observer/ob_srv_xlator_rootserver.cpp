@@ -190,7 +190,6 @@ void oceanbase::observer::init_srv_xlator_for_rootserver(ObSrvRpcXlator *xlator)
     RPC_PROCESSOR(rootserver::ObRpcCreateDirectoryP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcDropDirectoryP, *gctx_.root_service_);
 
-    RPC_PROCESSOR(rootserver::ObRpcAdminSyncRewriteRulesP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcCreateCCLRuleDDLP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcDropCCLRuleDDLP, *gctx_.root_service_);
 

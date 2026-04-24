@@ -387,7 +387,7 @@ int ObEventHistoryTableOperator::add_event_with_retry(const char *module, const 
                 "max support 6 pair of name-value args and 1 extra info, if number of others is not 13, should be even");
   int ret = common::OB_SUCCESS;
   int64_t event_ts = 0;
-  TIMEGUARD_INIT(EVENT_HISTORY, 100_ms, 5_s);
+  TIMEGUARD_INIT(EVENT_HISTORY, 100_ms);
   if (!inited_) {
     ret = common::OB_NOT_INIT;
     SHARE_LOG(WARN, "not init", K(ret));

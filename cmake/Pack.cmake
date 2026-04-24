@@ -38,7 +38,6 @@ if(WIN32)
   # Binaries -> bin/
   install(PROGRAMS
     ${CMAKE_BINARY_DIR}/src/observer/seekdb.exe
-    ${CMAKE_BINARY_DIR}/src/observer/observer.exe
     DESTINATION bin
     COMPONENT server)
 
@@ -46,49 +45,62 @@ if(WIN32)
   # Uses file(GET_RUNTIME_DEPENDENCIES) at install time to recursively resolve
   # all DLL dependencies of the built executables — similar to how MySQL bundles
   # its runtime libraries into the MSI package.
-  set(_SEEKDB_EXE "${CMAKE_BINARY_DIR}/src/observer/seekdb.exe")
-  set(_OBSERVER_EXE "${CMAKE_BINARY_DIR}/src/observer/observer.exe")
-  set(_VCPKG_BIN_DIR "${OB_VCPKG_DIR}/bin")
+  # OB_VCPKG_DIR / OB_VSAG_DIR are normalized to forward slashes in Env.cmake;
+  # the TO_CMAKE_PATH calls below are defensive (idempotent) in case a future
+  # caller injects backslashes — configure_file() would otherwise bake them
+  # verbatim into _bundle_dlls.cmake and trigger CMake 3.20+'s "Invalid
+  # character escape" error (\w, \d, \x, ...).
+  file(TO_CMAKE_PATH "${CMAKE_BINARY_DIR}/src/observer/seekdb.exe" _SEEKDB_EXE)
+  file(TO_CMAKE_PATH "${OB_VCPKG_DIR}/bin" _VCPKG_BIN_DIR)
+  file(TO_CMAKE_PATH "${OB_VSAG_DIR}/bin" _VSAG_BIN_DIR)
 
   file(WRITE "${CMAKE_BINARY_DIR}/_bundle_dlls.cmake.in" [=[
 file(GET_RUNTIME_DEPENDENCIES
   EXECUTABLES
     "@_SEEKDB_EXE@"
-    "@_OBSERVER_EXE@"
   RESOLVED_DEPENDENCIES_VAR _resolved
   UNRESOLVED_DEPENDENCIES_VAR _unresolved
   CONFLICTING_DEPENDENCIES_PREFIX _conflicts
   DIRECTORIES
     "@_VCPKG_BIN_DIR@"
+    "@_VSAG_BIN_DIR@"
   PRE_EXCLUDE_REGEXES
     "^api-ms-"
     "^ext-ms-"
 )
 
-set(_vcpkg_bin "@_VCPKG_BIN_DIR@")
+set(_search_dirs "@_VCPKG_BIN_DIR@;@_VSAG_BIN_DIR@")
 set(_bundled 0)
 
-# Install resolved dependencies that have a vcpkg copy.
-# System-only DLLs (KERNEL32, ADVAPI32, ...) are absent from vcpkg and
-# therefore skipped — they ship with every Windows installation.
+# Install resolved dependencies that live in vcpkg or vsag directories.
+# System-only DLLs (KERNEL32, ADVAPI32, ...) are absent from these dirs
+# and therefore skipped — they ship with every Windows installation.
 foreach(_file ${_resolved})
   get_filename_component(_name "${_file}" NAME)
-  if(EXISTS "${_vcpkg_bin}/${_name}")
-    message(STATUS "  ${_name}")
-    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
-      TYPE SHARED_LIBRARY FILES "${_vcpkg_bin}/${_name}")
-    math(EXPR _bundled "${_bundled} + 1")
-  endif()
+  set(_found FALSE)
+  foreach(_dir ${_search_dirs})
+    if(EXISTS "${_dir}/${_name}")
+      message(STATUS "  ${_name}")
+      file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
+        TYPE SHARED_LIBRARY FILES "${_dir}/${_name}")
+      math(EXPR _bundled "${_bundled} + 1")
+      set(_found TRUE)
+      break()
+    endif()
+  endforeach()
 endforeach()
 
-# Conflicting dependencies (same DLL in vcpkg AND System32, e.g. libssl).
+# Conflicting dependencies (same DLL in multiple dirs AND System32).
 foreach(_name ${_conflicts_FILENAMES})
-  if(EXISTS "${_vcpkg_bin}/${_name}")
-    message(STATUS "  ${_name} (conflict resolved -> vcpkg)")
-    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
-      TYPE SHARED_LIBRARY FILES "${_vcpkg_bin}/${_name}")
-    math(EXPR _bundled "${_bundled} + 1")
-  endif()
+  foreach(_dir ${_search_dirs})
+    if(EXISTS "${_dir}/${_name}")
+      message(STATUS "  ${_name} (conflict resolved -> ${_dir})")
+      file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
+        TYPE SHARED_LIBRARY FILES "${_dir}/${_name}")
+      math(EXPR _bundled "${_bundled} + 1")
+      break()
+    endif()
+  endforeach()
 endforeach()
 
 message(STATUS "Bundled ${_bundled} runtime DLLs into bin/")
@@ -164,6 +176,23 @@ message(STATUS "Bundled ${_bundled} runtime DLLs into bin/")
       tools/windows/seekdb_manage.ps1
       DESTINATION bin
       COMPONENT server)
+  endif()
+
+  # seekdb Configurator -> bin/
+  # Built by 'dotnet publish' (self-contained single-file) before cpack runs.
+  # build.ps1 places the output under tools/windows/seekdbConfigurator/publish/.
+  set(_CONFIGURATOR_EXE
+    "${CMAKE_SOURCE_DIR}/tools/windows/seekdbConfigurator/publish/seekdbConfigurator.exe")
+  if(EXISTS "${_CONFIGURATOR_EXE}")
+    install(PROGRAMS "${_CONFIGURATOR_EXE}"
+      DESTINATION bin
+      COMPONENT server)
+  else()
+    message(WARNING
+      "seekdbConfigurator.exe not found at ${_CONFIGURATOR_EXE}. "
+      "The MSI will not include the post-install Configurator wizard. "
+      "Run 'dotnet publish' on seekdbConfigurator.csproj first, or use "
+      "'build.ps1 package' which does this automatically.")
   endif()
 
   # TODO: Utils (ob_admin/ob_error) — uncomment when Windows tool builds are ready

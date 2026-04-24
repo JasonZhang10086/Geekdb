@@ -4,7 +4,7 @@ include(cmake/Utils.cmake)
 include(cmake/Env.cmake)
 
 project("OceanBase"
-  VERSION 1.2.0.0
+  VERSION 1.3.0.0
   DESCRIPTION "OceanBase seekdb database system"
   HOMEPAGE_URL "https://www.oceanbase.ai"
   LANGUAGES CXX C ASM)
@@ -128,24 +128,10 @@ if(EXISTS "${STDC_SHARED_LIB_SYMLINK}")
   message(STATUS "STDC_SHARED_LIB: ${STDC_SHARED_LIB}")
 endif()
 
-set(HYPERSCAN_LIB "")
-set(HYPERSCAN_SHARED_LIB "")
-if (${ARCHITECTURE} STREQUAL "x86_64" OR ${ARCHITECTURE} STREQUAL "amd64")
-   if (WIN32)
-    set(HYPERSCAN_LIB "${OB_VCPKG_DIR}/lib/hs.lib")
-    include_directories("${OB_VCPKG_DIR}/include")
-    message(STATUS "Using Windows Hyperscan library: ${HYPERSCAN_LIB}")
-  else()
-    set(HYPERSCAN_LIB "${DEP_DIR}/lib/libhs.a")
-    set(HYPERSCAN_SHARED_LIB_SYMLINK "${DEP_DIR}/lib/libhs.so")
-    file(REAL_PATH ${HYPERSCAN_SHARED_LIB_SYMLINK} HYPERSCAN_SHARED_LIB)
-    message(STATUS "HYPERSCAN_SHARED_LIB: ${HYPERSCAN_SHARED_LIB}")
-  endif()
-endif()
-
 add_subdirectory(deps/oblib)
 add_subdirectory(src/objit)
 add_subdirectory(src)
+add_subdirectory(sqlite-benchmark)
 
 include(CMakeDependentOption)
 # OB_BUILD_PACKAGE => include tools and build them.
@@ -232,6 +218,8 @@ elseif(UNIX)
     endif()
   endif()
 elseif(WIN32)
-  message(STATUS "Windows package environment adapting")
-  include(cmake/WIX.cmake)
+  if(OB_BUILD_PACKAGE)
+    message(STATUS "Windows package environment adapting")
+    include(cmake/WIX.cmake)
+  endif()
 endif()

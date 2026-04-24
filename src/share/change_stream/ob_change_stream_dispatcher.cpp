@@ -347,14 +347,14 @@ void ObCSDispatcher::run1()
     }
     // ① Epoch change detected → abort recovery.
     if (dispatcher_epoch_ != ATOMIC_LOAD(&epoch_)) {
-      LOG_INFO("ObCSDispatcher: batch failure detected, entering recovery",
+      FLOG_INFO("ObCSDispatcher: batch failure detected, entering recovery",
                K(dispatcher_epoch_), K(ATOMIC_LOAD(&epoch_)));
       // Wait for all in-flight batches to finish their abort/cleanup.
       while (ATOMIC_LOAD(&active_batch_count_) > 0) {
         if (has_set_stop()) { break; }
         usleep(1000);
         if (REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
-          LOG_INFO("ObCSDispatcher: recovery waiting for active batches",
+          FLOG_INFO("ObCSDispatcher: recovery waiting for active batches",
                    K(ATOMIC_LOAD(&active_batch_count_)));
         }
       }
@@ -378,7 +378,7 @@ void ObCSDispatcher::run1()
       // Idle: wait for Fetcher to push new data (or 100ms timeout as fallback).
       ObThreadCondGuard cond_guard(dispatch_cond_);
       if (dispatch_sn_ >= tx_ring_.end_sn()) {   // Re-check under lock to avoid missed signal.
-        (void)dispatch_cond_.wait(100 * 1000);    // 100ms timeout.
+        (void)dispatch_cond_.wait(100);    // 100ms timeout.
       }
       if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
         LOG_INFO("CSDispatcher: idle waiting for new transactions",
@@ -498,6 +498,12 @@ int ObCSDispatcher::do_dispatch_()
 
   ObMultiVersionSchemaService *schema_service = nullptr;
   bool trans_started = false;
+  // Bump worker timeout to 5 minutes so that ObInnerSQLConnection propagates
+  // the same value to session's ob_query_timeout / ob_trx_timeout when the
+  // batch's inner-SQL statements are executed.
+  static const int64_t CS_DISPATCH_TRANS_TIMEOUT_US = 5L * 60L * 1000L * 1000L;
+  const int64_t saved_worker_timeout_ts = THIS_WORKER.get_timeout_ts();
+  THIS_WORKER.set_timeout_ts(ObTimeUtil::current_time() + CS_DISPATCH_TRANS_TIMEOUT_US);
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(exec_ctx->init_plugins())) {
     LOG_WARN("init plugins failed", KR(ret));
@@ -509,6 +515,7 @@ int ObCSDispatcher::do_dispatch_()
   } else {
     trans_started = true;
   }
+  THIS_WORKER.set_timeout_ts(saved_worker_timeout_ts);
 
   // ── Phase 2: push subtasks to workers ──
   // task_count_ is set once and NEVER modified afterwards; this avoids a
@@ -516,7 +523,12 @@ int ObCSDispatcher::do_dispatch_()
   // active_batch_count_ MUST be incremented before any push, so that even
   // if the last-worker fires immediately, the count is already > 0.
   if (OB_SUCC(ret)) {
+    int64_t debug_start = ObTimeUtil::current_time();
     DEBUG_SYNC(CS_ASYNC_VECTOR_INDEX_BEFORE_APPLY);
+    int64_t debug_end = ObTimeUtil::current_time();
+    if (debug_end - debug_start > 10 * 1000) {
+      FLOG_INFO("DEBUG_SYNC wait", K(debug_end - debug_start));
+    }
     const int64_t total_subtask_cnt = exec_ctx->sub_tasks_.count();
     exec_ctx->task_count_ = total_subtask_cnt;
     ATOMIC_INC(&active_batch_count_);
@@ -534,8 +546,7 @@ int ObCSDispatcher::do_dispatch_()
       batch_in_flight = true;
     }
 
-    LOG_INFO("CSDispatcher: subtasks pushed to workers",
-             K(exec_ctx->batch_sn_), K(pushed), K(exec_ctx->task_count_), K(total_subtask_cnt));
+    LOG_INFO("CSDispatcher: subtasks pushed to workers", K(pushed), K(total_subtask_cnt));
 
     const int64_t unpushed = total_subtask_cnt - pushed;
     if (unpushed > 0) {
