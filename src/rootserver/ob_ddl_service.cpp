@@ -6906,7 +6906,7 @@ int ObDDLService::generate_aux_index_schema_(
       LOG_WARN("fail to generate schema", K(ret), K(create_index_arg));
     } else if (ObVectorIndexUtil::should_set_max_lob_inrow_threshold_for_async_index(
                    nonconst_data_schema, index_schema.get_index_type(), index_schema.get_index_params())
-               && FALSE_IT(nonconst_data_schema.set_lob_inrow_threshold(OB_MAX_LOB_INROW_THRESHOLD))) {
+               && FALSE_IT(nonconst_data_schema.set_lob_inrow_threshold(OB_MAX_LOB_INROW_THRESHOLD_FOR_VEC_ASYNC_INDEX))) {
     } else if (FALSE_IT(need_alter_data_table_lob_inrow_threshold =
                    nonconst_data_schema.get_lob_inrow_threshold() != data_schema->get_lob_inrow_threshold())) {
     } else if (create_index_arg.is_offline_rebuild_){

@@ -250,6 +250,39 @@ elseif(WIN32)
   set(OB_CC "clang-cl")
   set(OB_CXX "clang-cl")
   add_definitions(-DWIN32_LEAN_AND_MEAN -DNOMINMAX)
+
+  # All bundled / vcpkg-provided vendor libraries (s2.lib, sqlite3.lib,
+  # zlib.lib, ...) are built against the Release MSVC runtime. Using /MDd
+  # in a Debug build makes MSVC STL set _ITERATOR_DEBUG_LEVEL=2, which
+  # then trips #pragma detect_mismatch at link time against those
+  # vendor .obj files built with _ITERATOR_DEBUG_LEVEL=0. Force the
+  # Release runtime (MultiThreadedDLL) for all configs on Windows and
+  # pin _ITERATOR_DEBUG_LEVEL=0 to match vendor libs.
+  cmake_policy(SET CMP0091 NEW)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+      CACHE STRING "MSVC runtime library (must match vendor libs)" FORCE)
+  add_definitions(-D_ITERATOR_DEBUG_LEVEL=0)
+  # vcpkg ships both Release (lib/) and Debug (debug/lib/) variants of
+  # several libraries (gRPC, protobuf, abseil, ...). In a Debug build CMake
+  # would otherwise resolve imported targets from find_package(... CONFIG)
+  # to the /MDd + _ITERATOR_DEBUG_LEVEL=2 Debug variant and trip
+  # #pragma detect_mismatch at link time. Map every non-Release config to
+  # Release so imported targets always resolve to the Release .lib that
+  # matches our CRT. These must be set at top-level (Env.cmake is included
+  # before project() in root CMakeLists.txt) so the mapping is in scope of
+  # every target that links against such imported libs.
+  set(CMAKE_MAP_IMPORTED_CONFIG_DEBUG Release)
+  set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release)
+  set(CMAKE_MAP_IMPORTED_CONFIG_MINSIZEREL Release)
+  # /RTC1 requires the debug CRT; strip it so Debug builds can use /MD.
+  foreach(_flag_var
+          CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG
+          CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+    if(DEFINED ${_flag_var})
+      string(REGEX REPLACE "[ \t]*/RTC[^ \t]*" "" ${_flag_var} "${${_flag_var}}")
+    endif()
+  endforeach()
+  unset(_flag_var)
   ob_define(SYS_UM_INCLUDE_DIR "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um")
   ob_define(SYS_UCRT_INCLUDE_DIR "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt")
   ob_define(SYS_SHARED_INCLUDE_DIR "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared")

@@ -3007,8 +3007,11 @@ int ObPluginVectorIndexAdaptor::complete_index_mem_data_incremental(ObVectorQuer
         base_scn.is_valid_and_not_min() &&
         last_dml_scn.is_valid() &&
         base_scn >= last_dml_scn;
+    if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
+      FLOG_INFO("check_scan", K(can_skip_scan_4th_table), K(base_scn), K(last_dml_scn), K(base_scn>=last_dml_scn));
+    }
 
-    if (OB_SUCC(ret) && can_skip_scan_4th_table && !REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
+    if (OB_SUCC(ret) && can_skip_scan_4th_table && !REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
       roaring::api::roaring64_bitmap_free(ctx->bitmaps_->insert_bitmap_);
       roaring::api::roaring64_bitmap_free(ctx->bitmaps_->delete_bitmap_);
       ctx->bitmaps_->insert_bitmap_ = ibitmap;

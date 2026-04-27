@@ -105,7 +105,7 @@ struct ObASyncIndexEvent
   }
 
   TO_STRING_KV(K_(tablet_id), K_(table_id), K_(scn), K_(vid), K_(type),
-               KP_(vec_data), K_(vec_data_len));
+               KP_(vec_data), K_(vec_data_len), K_(commit_version));
 };
 
 // ---------------------------------------------------------------------------

@@ -103,7 +103,7 @@ void *ProtectedStackAllocator::__alloc(const uint64_t tenant_id,
   void *ptr = nullptr;
 
   const ssize_t ps = page_size();
-  ObMemAttr attr(tenant_id, "CoStack", ctx_id, OB_HIGH_ALLOC);
+  ObMemAttr attr(tenant_id, "CoStack", ctx_id);
   // page at bottom will be used as guard-page
   char *buffer = (char *)ob_malloc(size, attr);
   if (OB_ISNULL(buffer)) {
