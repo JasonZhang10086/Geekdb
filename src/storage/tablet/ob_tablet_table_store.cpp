@@ -3382,11 +3382,12 @@ int ObTabletTableStore::build_fork_minor_tables_(
     } else if (OB_FAIL(check_minor_tables_(merged_minor_tables))) {
       ObITable *first = merged_minor_tables.at(0);
       ObITable *last = merged_minor_tables.at(merged_minor_tables.count() - 1);
+      ObCStringHelper helper;
       LOG_WARN("merged minor tables is not continuous for fork", KR(ret),
           "tablet_id", tablet.get_tablet_id(),
           "merged_cnt", merged_minor_tables.count(),
-          "first", OB_ISNULL(first) ? "NULL" : to_cstring(first->get_key()),
-          "last", OB_ISNULL(last) ? "NULL" : to_cstring(last->get_key()),
+          "first", OB_ISNULL(first) ? "NULL" : helper.convert(first->get_key()),
+          "last", OB_ISNULL(last) ? "NULL" : helper.convert(last->get_key()),
           K(fork_snapshot_version), K(clog_checkpoint_scn));
     } else if (merged_minor_tables.at(merged_minor_tables.count() - 1)->get_end_scn() != clog_checkpoint_scn) {
       ret = OB_ERR_UNEXPECTED;
