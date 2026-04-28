@@ -16,7 +16,11 @@
 
 #define USING_LOG_PREFIX LIB
 
-#include "ob_geo_func_touches.h"
+#include "lib/geo/ob_geo_dispatcher.h"
+#include "lib/geo/ob_geo_func_touches.h"
+#include "lib/geo/ob_geo_tree.h"
+#include "lib/geo/ob_geo_to_tree_visitor.h"
+#include "lib/oblog/ob_log_module.h"
 #include "lib/geo/ob_geo_func_utils.h"
 
 using namespace oceanbase::common;
@@ -209,10 +213,14 @@ public:
   };
 
 private:
+  using TouchesBinaryFn = int (*)(const common::ObGeometry *, const common::ObGeometry *,
+                                   const ObGeoEvalCtx &, bool &);
+
   template<typename GcTreeType>
   static int is_part_touches_gc_other(typename GcTreeType::sub_mpt_type *mpt1,
       typename GcTreeType::sub_ml_type *mls1, typename GcTreeType::sub_mp_type *mpy1,
-      const ObGeometry *g2, const ObGeoEvalCtx &context, bool &is_part_touches)
+      const ObGeometry *g2, const ObGeoEvalCtx &context, bool &is_part_touches,
+      TouchesBinaryFn wkb_fn)
   {
     int ret = OB_SUCCESS;
     is_part_touches = false;
@@ -221,7 +229,7 @@ private:
       if (OB_FAIL(ObGeoTypeUtil::tree_to_bin(
               *context.get_allocator(), mls1, mls_bin, context.get_srs()))) {
         LOG_WARN("failed to convert geo tree to binary", K(ret));
-      } else if (OB_FAIL(eval_wkb_binary(mls_bin, g2, context, is_part_touches))) {
+      } else if (OB_FAIL(wkb_fn(mls_bin, g2, context, is_part_touches))) {
         LOG_WARN("fail to eval wkb binary", K(ret));
       }
     }
@@ -230,7 +238,7 @@ private:
       if (OB_FAIL(ObGeoTypeUtil::tree_to_bin(
               *context.get_allocator(), mpy1, mpy_bin, context.get_srs()))) {
         LOG_WARN("failed to convert geo tree to binary", K(ret));
-      } else if (OB_FAIL(eval_wkb_binary(mpy_bin, g2, context, is_part_touches))) {
+      } else if (OB_FAIL(wkb_fn(mpy_bin, g2, context, is_part_touches))) {
         LOG_WARN("fail to eval wkb binary", K(ret));
       }
     }
@@ -241,47 +249,48 @@ private:
   static int is_part_touches_gc_gc(typename GcTreeType::sub_mpt_type *mpt1,
       typename GcTreeType::sub_ml_type *mls1, typename GcTreeType::sub_mp_type *mpy1,
       typename GcTreeType::sub_mpt_type *mpt2, typename GcTreeType::sub_ml_type *mls2,
-      typename GcTreeType::sub_mp_type *mpy2, const ObGeoEvalCtx &context, bool &is_part_touches)
+      typename GcTreeType::sub_mp_type *mpy2, const ObGeoEvalCtx &context, bool &is_part_touches,
+      TouchesBinaryFn tree_fn)
   {
     int ret = OB_SUCCESS;
     is_part_touches = false;
     if (!is_part_touches && !mpy1->is_empty() && !mls2->is_empty()) {
-      if (OB_FAIL(eval_tree_binary(mpy1, mls2, context, is_part_touches))) {
+      if (OB_FAIL(tree_fn(mpy1, mls2, context, is_part_touches))) {
         LOG_WARN("fail to eval tree binary", K(ret));
       }
     }
     if (OB_SUCC(ret) && !is_part_touches && !mpy1->is_empty() && !mpy2->is_empty()) {
-      if (OB_FAIL(eval_tree_binary(mpy1, mpy2, context, is_part_touches))) {
+      if (OB_FAIL(tree_fn(mpy1, mpy2, context, is_part_touches))) {
         LOG_WARN("fail to eval tree binary", K(ret));
       }
     }
     if (OB_SUCC(ret) && !is_part_touches && !mls1->is_empty() && !mls2->is_empty()) {
-      if (OB_FAIL(eval_tree_binary(mls1, mls2, context, is_part_touches))) {
+      if (OB_FAIL(tree_fn(mls1, mls2, context, is_part_touches))) {
         LOG_WARN("fail to eval tree binary", K(ret));
       }
     }
     if (OB_SUCC(ret) && !is_part_touches && !mls1->is_empty() && !mpy2->is_empty()) {
-      if (OB_FAIL(eval_tree_binary(mls1, mpy2, context, is_part_touches))) {
+      if (OB_FAIL(tree_fn(mls1, mpy2, context, is_part_touches))) {
         LOG_WARN("fail to eval tree binary", K(ret));
       }
     }
     if (OB_SUCC(ret) && !is_part_touches && !mpt1->is_empty() && !mls2->is_empty()) {
-      if (OB_FAIL(eval_tree_binary(mpt1, mls2, context, is_part_touches))) {
+      if (OB_FAIL(tree_fn(mpt1, mls2, context, is_part_touches))) {
         LOG_WARN("fail to eval tree binary", K(ret));
       }
     }
     if (OB_SUCC(ret) && !is_part_touches && !mpt1->is_empty() && !mpy2->is_empty()) {
-      if (OB_FAIL(eval_tree_binary(mpt1, mpy2, context, is_part_touches))) {
+      if (OB_FAIL(tree_fn(mpt1, mpy2, context, is_part_touches))) {
         LOG_WARN("fail to eval tree binary", K(ret));
       }
     }
     if (OB_SUCC(ret) && !is_part_touches && !mls1->is_empty() && !mpt2->is_empty()) {
-      if (OB_FAIL(eval_tree_binary(mls1, mpt2, context, is_part_touches))) {
+      if (OB_FAIL(tree_fn(mls1, mpt2, context, is_part_touches))) {
         LOG_WARN("fail to eval tree binary", K(ret));
       }
     }
     if (OB_SUCC(ret) && !is_part_touches && !mpy1->is_empty() && !mpt2->is_empty()) {
-      if (OB_FAIL(eval_tree_binary(mpy1, mpt2, context, is_part_touches))) {
+      if (OB_FAIL(tree_fn(mpy1, mpt2, context, is_part_touches))) {
         LOG_WARN("fail to eval tree binary", K(ret));
       }
     }
@@ -571,7 +580,8 @@ private:
 
   template<typename GcTreeType>
   static int eval_touches_gc_other_cart(
-      const ObGeometry *g1, const ObGeometry *g2, const ObGeoEvalCtx &context, bool &result)
+      const ObGeometry *g1, const ObGeometry *g2, const ObGeoEvalCtx &context, bool &result,
+      TouchesBinaryFn wkb_fn)
   {
     int ret = OB_SUCCESS;
     result = false;
@@ -587,7 +597,7 @@ private:
       ObIAllocator *allocator = context.get_allocator();
       ObGeoToTreeVisitor tree_visitor(allocator);
       bool is_part_joint = false;
-      bool is_part_touches = false;  
+      bool is_part_touches = false;
       bool point_intersects = false;
       if (OB_FAIL(geo1->do_visit(tree_visitor))) {
         LOG_WARN("failed to transform gc to tree", K(ret));
@@ -598,7 +608,7 @@ private:
       } else if (OB_ISNULL(mpt1) || OB_ISNULL(mls1) || OB_ISNULL(mpy1)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected null geometry collection split", K(ret));
-      } else if (!mpt1->is_empty() && 
+      } else if (!mpt1->is_empty() &&
                 (g2->type() == ObGeoType::POINT || g2->type() == ObGeoType::MULTIPOINT)) {
         ObGeometry *mpt_bin = NULL;
         if (OB_FAIL(ObGeoTypeUtil::tree_to_bin(
@@ -622,7 +632,7 @@ private:
       } else {
         // Check that at least one part of g1 touches at least one part of g2.
         if (OB_FAIL((is_part_touches_gc_other<GcTreeType>(
-                mpt1, mls1, mpy1, g2, context, is_part_touches)))) {
+                mpt1, mls1, mpy1, g2, context, is_part_touches, wkb_fn)))) {
           LOG_WARN("fail to do is part touches gc other", K(ret));
         } else if (!is_part_touches) {
           result = false;
@@ -632,7 +642,7 @@ private:
         }
       }
     } else if (g2->type() == ObGeoType::GEOMETRYCOLLECTION) {
-      ret = eval_touches_gc_other_cart<GcTreeType>(g2, g1, context, result);
+      ret = eval_touches_gc_other_cart<GcTreeType>(g2, g1, context, result, wkb_fn);
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("g1 and g2 are not geometry collection", K(ret), K(g1->type()), K(g2->type()));
@@ -642,7 +652,8 @@ private:
 
   template<typename GcTreeType>
   static int eval_touches_gc_other_geog(
-      const ObGeometry *g1, const ObGeometry *g2, const ObGeoEvalCtx &context, bool &result)
+      const ObGeometry *g1, const ObGeometry *g2, const ObGeoEvalCtx &context, bool &result,
+      TouchesBinaryFn wkb_fn)
   {
     int ret = OB_SUCCESS;
     result = false;
@@ -658,7 +669,7 @@ private:
       ObIAllocator *allocator = context.get_allocator();
       ObGeoToTreeVisitor tree_visitor(allocator);
       bool is_part_joint = false;
-      bool is_part_touches = false;  
+      bool is_part_touches = false;
       bool point_intersects = false;
       if (OB_FAIL(geo1->do_visit(tree_visitor))) {
         LOG_WARN("failed to transform gc to tree", K(ret));
@@ -669,7 +680,7 @@ private:
       } else if (OB_ISNULL(mpt1) || OB_ISNULL(mls1) || OB_ISNULL(mpy1)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected null geometry collection split", K(ret));
-      } else if (!mpt1->is_empty() && 
+      } else if (!mpt1->is_empty() &&
                 (g2->type() == ObGeoType::POINT || g2->type() == ObGeoType::MULTIPOINT)) {
         ObGeometry *mpt_bin = NULL;
         if (OB_FAIL(ObGeoTypeUtil::tree_to_bin(
@@ -692,9 +703,9 @@ private:
         LOG_WARN("fail to do gc union", K(ret));
       } else {
         // Check that at least one part of g1 touches at least one part of g2.
-        bool is_part_touches = false;  
+        bool is_part_touches = false;
         if (OB_FAIL((is_part_touches_gc_other<GcTreeType>(
-                mpt1, mls1, mpy1, g2, context, is_part_touches)))) {
+                mpt1, mls1, mpy1, g2, context, is_part_touches, wkb_fn)))) {
           LOG_WARN("fail to do is part touches gc other", K(ret));
         } else if (!is_part_touches) {
           result = false;
@@ -704,7 +715,7 @@ private:
         }
       }
     } else if (g2->type() == ObGeoType::GEOMETRYCOLLECTION) {
-      ret = eval_touches_gc_other_geog<GcTreeType>(g2, g1, context, result);
+      ret = eval_touches_gc_other_geog<GcTreeType>(g2, g1, context, result, wkb_fn);
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("g1 and g2 are not geometry collection", K(ret), K(g1->type()), K(g2->type()));
@@ -715,7 +726,8 @@ private:
   // assume that g1 g2 both collection
   template<typename GcTreeType>
   static int eval_touches_gc_gc(
-      const ObGeometry *g1, const ObGeometry *g2, const ObGeoEvalCtx &context, bool &result)
+      const ObGeometry *g1, const ObGeometry *g2, const ObGeoEvalCtx &context, bool &result,
+      TouchesBinaryFn tree_fn)
   {
     int ret = OB_SUCCESS;
     if (g1->type() != ObGeoType::GEOMETRYCOLLECTION
@@ -739,7 +751,7 @@ private:
         typename GcTreeType::sub_mp_type *mpy2 = NULL;
         ObGeometry *geo2 = const_cast<ObGeometry *>(reinterpret_cast<const ObGeometry *>(g2));
         // Check that at least one part of g1 touches at least one part of g2.
-        bool is_part_touches = false;  
+        bool is_part_touches = false;
         bool is_part_joint = false;  // Check that the interiors of g1 and g2 are disjoint.
         if (OB_FAIL(ObGeoFuncUtils::ob_gc_prepare<GcTreeType>(context, geo2, mpt2, mls2, mpy2))) {
           LOG_WARN("failed to prepare gc", K(ret));
@@ -751,7 +763,7 @@ private:
           // MySQL return NULL, PG return false
           result = false;
         } else if (OB_FAIL((is_part_touches_gc_gc<GcTreeType>(
-                       mpt1, mls1, mpy1, mpt2, mls2, mpy2, context, is_part_touches)))) {
+                       mpt1, mls1, mpy1, mpt2, mls2, mpy2, context, is_part_touches, tree_fn)))) {
           LOG_WARN("fail to eval is part touches", K(ret));
         } else if (!is_part_touches) {
           result = false;
@@ -766,389 +778,6 @@ private:
     return ret;
   }
 };
-
-//===========BIN GEOM==========
-// Geom Point/MultiPoint: cartesian cases return false (PG) / NULL (MySQL)
-OB_GEO_CART_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomPoint, ObWkbGeomPoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomPoint, ObWkbGeomMultiPoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomMultiPoint, ObWkbGeomPoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomMultiPoint, ObWkbGeomMultiPoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-// cartesian cases with eval_touches_mpt (MultiPoint)
-OB_GEO_CART_BINARY_FUNC_GEO2_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomMultiPoint, bool)
-{
-  return eval_touches_mpt<ObWkbGeomMultiPoint, GeoType1>(
-      g2, g1, context, ObBGStrategyType::DEFAULT_NONE, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_GEO1_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomMultiPoint, bool)
-{
-  return eval_touches_mpt<ObWkbGeomMultiPoint, GeoType2>(
-      g1, g2, context, ObBGStrategyType::DEFAULT_NONE, result);
-}
-OB_GEO_FUNC_END;
-
-// Geom Collection
-OB_GEO_CART_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomCollection, ObWkbGeomCollection, bool)
-{
-  return eval_touches_gc_gc<ObCartesianGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_BINARY_FUNC_GEO2_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomCollection, bool)
-{
-  return eval_touches_gc_other_cart<ObCartesianGeometrycollection>(g2, g1, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_BINARY_FUNC_GEO1_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomCollection, bool)
-{
-  return eval_touches_gc_other_cart<ObCartesianGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-// handle ambiguous partial specializations
-OB_GEO_CART_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomCollection, ObWkbGeomMultiPoint, bool)
-{
-  return eval_touches_gc_other_cart<ObCartesianGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeomMultiPoint, ObWkbGeomCollection, bool)
-{
-  return eval_touches_gc_other_cart<ObCartesianGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-//===========BIN GEOG==========
-// handle ambiguous partial specializations
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogCollection, ObWkbGeogPoint, bool)
-{
-  return eval_touches_gc_other_geog<ObGeographGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogPoint, ObWkbGeogCollection, bool)
-{
-  return eval_touches_gc_other_geog<ObGeographGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-// geometrycollection for geography
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogCollection, ObWkbGeogCollection, bool)
-{
-  return eval_touches_gc_gc<ObGeographGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_GEO2_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogCollection, bool)
-{
-  return eval_touches_gc_other_geog<ObGeographGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_GEO1_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogCollection, bool)
-{
-  return eval_touches_gc_other_geog<ObGeographGeometrycollection>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-// cases use eval_touches_mpt (multi point)
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogMultiPoint, ObWkbGeogPolygon, bool)
-{
-  return eval_touches_mpt<ObWkbGeogMultiPoint, ObWkbGeogPolygon>(
-      g1, g2, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObWkbGeogMultiPoint, ObWkbGeogMultiPolygon, bool)
-{
-  return eval_touches_mpt<ObWkbGeogMultiPoint, ObWkbGeogMultiPolygon>(
-      g1, g2, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogPolygon, ObWkbGeogMultiPoint, bool)
-{
-  return eval_touches_mpt<ObWkbGeogMultiPoint, ObWkbGeogPolygon>(
-      g2, g1, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObWkbGeogMultiPolygon, ObWkbGeogMultiPoint, bool)
-{
-  return eval_touches_mpt<ObWkbGeogMultiPoint, ObWkbGeogMultiPolygon>(
-      g2, g1, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogMultiPoint, ObWkbGeogLineString, bool)
-{
-  return eval_touches_mpt<ObWkbGeogMultiPoint, ObWkbGeogLineString>(
-      g1, g2, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogLineString, ObWkbGeogMultiPoint, bool)
-{
-  return eval_touches_mpt<ObWkbGeogMultiPoint, ObWkbGeogLineString>(
-      g2, g1, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObWkbGeogMultiPoint, ObWkbGeogMultiLineString, bool)
-{
-  return eval_touches_mpt<ObWkbGeogMultiPoint, ObWkbGeogMultiLineString>(
-      g1, g2, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObWkbGeogMultiLineString, ObWkbGeogMultiPoint, bool)
-{
-  return eval_touches_mpt<ObWkbGeogMultiPoint, ObWkbGeogMultiLineString>(
-      g2, g1, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-// geograpyic cases return false (PG) / NULL (MySQL)
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogPoint, ObWkbGeogPoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogMultiPoint, ObWkbGeogMultiPoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogPoint, ObWkbGeogMultiPoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogMultiPoint, ObWkbGeogPoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-// geograpyic cases using point strategy (point and nonpoint types)
-OB_GEO_GEOG_BINARY_FUNC_GEO2_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogPoint, bool)
-{
-  return eval_touches_with_point_strategy<GeoType1, ObWkbGeogPoint>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_BINARY_FUNC_GEO1_BEGIN(ObGeoFuncTouchesImpl, ObWkbGeogPoint, bool)
-{
-  return eval_touches_with_point_strategy<ObWkbGeogPoint, GeoType2>(g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-//============================Tree Cart(only Multi)========================
-// multipoint
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultipoint, ObCartesianMultipoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultipoint, ObCartesianMultipolygon, bool)
-{
-  return eval_touches_mpt<ObCartesianMultipoint, ObCartesianMultipolygon>(
-      g1, g2, context, ObBGStrategyType::DEFAULT_NONE, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultipoint, ObCartesianMultilinestring, bool)
-{
-  return eval_touches_mpt<ObCartesianMultipoint, ObCartesianMultilinestring>(
-      g1, g2, context, ObBGStrategyType::DEFAULT_NONE, result);
-}
-OB_GEO_FUNC_END;
-
-// multilinestring
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultilinestring, ObCartesianMultipoint, bool)
-{
-  return eval_touches_mpt<ObCartesianMultipoint, ObCartesianMultilinestring>(
-      g2, g1, context, ObBGStrategyType::DEFAULT_NONE, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultilinestring, ObCartesianMultipolygon, bool)
-{
-  UNUSED(context);
-  return eval_touches_without_strategy<ObCartesianMultilinestring, ObCartesianMultipolygon>(
-      g1, g2, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultilinestring, ObCartesianMultilinestring, bool)
-{
-  UNUSED(context);
-  return eval_touches_without_strategy<ObCartesianMultilinestring, ObCartesianMultilinestring>(
-      g1, g2, result);
-}
-OB_GEO_FUNC_END;
-
-// multipolygon
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultipolygon, ObCartesianMultipoint, bool)
-{
-  return eval_touches_mpt<ObCartesianMultipoint, ObCartesianMultipolygon>(
-      g2, g1, context, ObBGStrategyType::DEFAULT_NONE, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultipolygon, ObCartesianMultipolygon, bool)
-{
-  UNUSED(context);
-  return eval_touches_without_strategy<ObCartesianMultipolygon, ObCartesianMultipolygon>(
-      g1, g2, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_CART_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObCartesianMultipolygon, ObCartesianMultilinestring, bool)
-{
-  UNUSED(context);
-  return eval_touches_without_strategy<ObCartesianMultipolygon, ObCartesianMultilinestring>(
-      g1, g2, result);
-}
-OB_GEO_FUNC_END;
-
-//============================Tree Geog(only Multi)========================
-// multipoint
-OB_GEO_GEOG_TREE_FUNC_BEGIN(ObGeoFuncTouchesImpl, ObGeographMultipoint, ObGeographMultipoint, bool)
-{
-  UNUSEDx(g1, g2, context);
-  result = false;
-  return OB_SUCCESS;
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObGeographMultipoint, ObGeographMultipolygon, bool)
-{
-  return eval_touches_mpt<ObGeographMultipoint, ObGeographMultipolygon>(
-      g1, g2, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObGeographMultipoint, ObGeographMultilinestring, bool)
-{
-  return eval_touches_mpt<ObGeographMultipoint, ObGeographMultilinestring>(
-      g1, g2, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-// multilinestring
-OB_GEO_GEOG_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObGeographMultilinestring, ObGeographMultipoint, bool)
-{
-  return eval_touches_mpt<ObGeographMultipoint, ObGeographMultilinestring>(
-      g2, g1, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObGeographMultilinestring, ObGeographMultipolygon, bool)
-{
-  return eval_touches_with_nonpoint_strategy<ObGeographMultilinestring, ObGeographMultipolygon>(
-      g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObGeographMultilinestring, ObGeographMultilinestring, bool)
-{
-  return eval_touches_with_nonpoint_strategy<ObGeographMultilinestring, ObGeographMultilinestring>(
-      g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-// multipolygon
-OB_GEO_GEOG_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObGeographMultipolygon, ObGeographMultipoint, bool)
-{
-  return eval_touches_mpt<ObGeographMultipoint, ObGeographMultipolygon>(
-      g2, g1, context, ObBGStrategyType::PL_PA_STRATEGY, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObGeographMultipolygon, ObGeographMultipolygon, bool)
-{
-  return eval_touches_with_nonpoint_strategy<ObGeographMultipolygon, ObGeographMultipolygon>(
-      g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-OB_GEO_GEOG_TREE_FUNC_BEGIN(
-    ObGeoFuncTouchesImpl, ObGeographMultipolygon, ObGeographMultilinestring, bool)
-{
-  return eval_touches_with_nonpoint_strategy<ObGeographMultipolygon, ObGeographMultilinestring>(
-      g1, g2, context, result);
-}
-OB_GEO_FUNC_END;
-
-int ObGeoFuncTouches::eval(const ObGeoEvalCtx &gis_context, bool &result)
-{
-  return ObGeoFuncTouchesImpl::eval_geo_func(gis_context, result);
-}
 
 }  // namespace common
 }  // namespace oceanbase

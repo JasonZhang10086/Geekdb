@@ -34,14 +34,41 @@ public:
   ObIGeoDispatcher();
   virtual ~ObIGeoDispatcher() = default;
 
+  using BinaryEvalFn = int (*)(const common::ObGeometry *, const common::ObGeometry *,
+                                const ObGeoEvalCtx &, RetType &);
+
   static inline int eval_geo_func(const common::ObGeoEvalCtx &gis_context, RetType &result);
 
+  static inline int eval_geo_func_split(const common::ObGeoEvalCtx &gis_context, RetType &result,
+                                         BinaryEvalFn wkb_cart_fn, BinaryEvalFn wkb_geog_fn,
+                                         BinaryEvalFn tree_fn);
+
+  static inline int eval_wkb_binary_cart(const common::ObGeometry *g1,
+                                         const common::ObGeometry *g2,
+                                         const ObGeoEvalCtx &context,
+                                         RetType &result);
+
+  static inline int eval_wkb_binary_geog(const common::ObGeometry *g1,
+                                         const common::ObGeometry *g2,
+                                         const ObGeoEvalCtx &context,
+                                         RetType &result);
+
+  static inline int eval_tree_binary_cart(const common::ObGeometry *g1,
+                                          const common::ObGeometry *g2,
+                                          const ObGeoEvalCtx &context,
+                                          RetType &result);
+
+  static inline int eval_tree_binary_geog(const common::ObGeometry *g1,
+                                          const common::ObGeometry *g2,
+                                          const ObGeoEvalCtx &context,
+                                          RetType &result);
+
 protected:
-  static inline int eval_wkb_unary(const common::ObGeometry *g, 
+  static inline int eval_wkb_unary(const common::ObGeometry *g,
                                    const ObGeoEvalCtx &context,
                                    RetType &result);
 
-  static inline int eval_tree_unary(const common::ObGeometry *g, 
+  static inline int eval_tree_unary(const common::ObGeometry *g,
                                     const ObGeoEvalCtx &context,
                                     RetType &result);
 
@@ -54,7 +81,7 @@ protected:
                                      const common::ObGeometry *g2,
                                      const ObGeoEvalCtx &context,
                                      RetType &result);
-  
+
   static inline int eval_geo_func_inner(const common::ObGeoEvalCtx &gis_context, RetType &result);
 };
 
@@ -205,6 +232,428 @@ int ObIGeoDispatcher<RetType, Functype>::eval_wkb_unary(const common::ObGeometry
 }
 
 template <typename RetType, typename Functype>
+int ObIGeoDispatcher<RetType, Functype>::eval_wkb_binary_cart(const common::ObGeometry *g1,
+                                                              const common::ObGeometry *g2,
+                                                              const ObGeoEvalCtx &context,
+                                                              RetType &result)
+{
+  INIT_SUCC(ret);
+  switch (g1->type()) {
+  case common::ObGeoType::POINT:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::LINESTRING:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::POLYGON:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::GEOMETRYCOLLECTION:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::MULTIPOINT:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::MULTILINESTRING:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::MULTIPOLYGON:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+      break;
+    }
+    break;
+  default:
+    ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+    break;
+  }
+  return ret;
+}
+
+template <typename RetType, typename Functype>
+int ObIGeoDispatcher<RetType, Functype>::eval_wkb_binary_geog(const common::ObGeometry *g1,
+                                                              const common::ObGeometry *g2,
+                                                              const ObGeoEvalCtx &context,
+                                                              RetType &result)
+{
+  INIT_SUCC(ret);
+  switch (g1->type()) {
+  case common::ObGeoType::POINT:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::LINESTRING:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::POLYGON:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::GEOMETRYCOLLECTION:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::MULTIPOINT:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::MULTILINESTRING:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+      break;
+    }
+    break;
+  case common::ObGeoType::MULTIPOLYGON:
+    switch (g2->type()) {
+    case common::ObGeoType::POINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::LINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::POLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogCollection> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+      break;
+    }
+    break;
+  default:
+    ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+    break;
+  }
+  return ret;
+}
+
+template <typename RetType, typename Functype>
 int ObIGeoDispatcher<RetType, Functype>::eval_wkb_binary(const common::ObGeometry *g1,
                                                          const common::ObGeometry *g2,
                                                          const ObGeoEvalCtx &context,
@@ -217,411 +666,10 @@ int ObIGeoDispatcher<RetType, Functype>::eval_wkb_binary(const common::ObGeometr
   } else {
     switch (g1->crs()) {
     case common::ObGeoCRS::Cartesian:
-      switch (g1->type()) {
-      case common::ObGeoType::POINT:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPoint, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::LINESTRING:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomLineString, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::POLYGON:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomPolygon, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::GEOMETRYCOLLECTION:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomCollection, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::MULTIPOINT:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPoint, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::MULTILINESTRING:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiLineString, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::MULTIPOLYGON:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBi<ObWkbGeomMultiPolygon, ObWkbGeomMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-          break;
-        }
-        break;
-      default:
-        ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-        break;
-      }
+      ret = eval_wkb_binary_cart(g1, g2, context, result);
       break;
-    // end case common::ObGeoCRS::Cartesian
     case common::ObGeoCRS::Geographic:
-      switch (g1->type()) {
-      case common::ObGeoType::POINT:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPoint, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::LINESTRING:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogLineString, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::POLYGON:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogPolygon, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::GEOMETRYCOLLECTION:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogCollection, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::MULTIPOINT:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPoint, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::MULTILINESTRING:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiLineString, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-          break;
-        }
-        break;
-      case common::ObGeoType::MULTIPOLYGON:
-        switch (g2->type()) {
-        case common::ObGeoType::POINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::LINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::POLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogPolygon> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogCollection> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogMultiPoint> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogMultiLineString> :: eval(g1, g2, context, result);
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          ret = Functype::template EvalWkbBiGeog<ObWkbGeogMultiPolygon, ObWkbGeogMultiPolygon> :: eval(g1, g2, context, result);
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-          break;
-        }
-        break;
-      default:
-        ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-        break;
-      }
+      ret = eval_wkb_binary_geog(g1, g2, context, result);
       break;
     default:
       ret = OB_ERR_GIS_INVALID_DATA;
@@ -632,6 +680,428 @@ int ObIGeoDispatcher<RetType, Functype>::eval_wkb_binary(const common::ObGeometr
 }
 
 
+
+template <typename RetType, typename Functype>
+int ObIGeoDispatcher<RetType, Functype>::eval_tree_binary_cart(const common::ObGeometry *g1,
+                                                               const common::ObGeometry *g2,
+                                                               const ObGeoEvalCtx &context,
+                                                               RetType &result)
+{
+  INIT_SUCC(ret);
+  switch (g1->type()) {
+    case common::ObGeoType::POINT:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::LINESTRING:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::POLYGON:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+          break;
+      }
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
+      break;
+  }
+  return ret;
+}
+
+template <typename RetType, typename Functype>
+int ObIGeoDispatcher<RetType, Functype>::eval_tree_binary_geog(const common::ObGeometry *g1,
+                                                               const common::ObGeometry *g2,
+                                                               const ObGeoEvalCtx &context,
+                                                               RetType &result)
+{
+  INIT_SUCC(ret);
+  switch (g1->type()) {
+    case common::ObGeoType::POINT:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::LINESTRING:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::POLYGON:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::GEOMETRYCOLLECTION:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::MULTIPOINT:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::MULTILINESTRING:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+          break;
+      }
+      break;
+    case common::ObGeoType::MULTIPOLYGON:
+      switch (g2->type()) {
+        case common::ObGeoType::POINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographPoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::LINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographLineString> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::POLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographPolygon> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::GEOMETRYCOLLECTION:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOINT:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographMultipoint> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTILINESTRING:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographMultilinestring> :: eval(g1, g2, context, result);
+          break;
+        case common::ObGeoType::MULTIPOLYGON:
+          ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographMultipolygon> :: eval(g1, g2, context, result);
+          break;
+        default:
+          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+          break;
+      }
+      break;
+    default:
+      ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
+      break;
+  }
+  return ret;
+}
 
 template <typename RetType, typename Functype>
 int ObIGeoDispatcher<RetType, Functype>::eval_tree_binary(const common::ObGeometry *g1,
@@ -646,411 +1116,10 @@ int ObIGeoDispatcher<RetType, Functype>::eval_tree_binary(const common::ObGeomet
   } else {
     switch (g1->crs()) {
     case common::ObGeoCRS::Cartesian:
-      switch (g1->type()) {
-        case common::ObGeoType::POINT:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianPoint, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::LINESTRING:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianLineString, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::POLYGON:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianPolygon, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianGeometrycollection, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipoint, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianMultilinestring, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBi<ObCartesianMultipolygon, ObCartesianMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-              break;
-          }
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_CARTESIAN_SRS;
-          break;
-      }
+      ret = eval_tree_binary_cart(g1, g2, context, result);
       break;
-    // end case common::ObGeoCRS::Cartesian
     case common::ObGeoCRS::Geographic:
-      switch (g1->type()) {
-        case common::ObGeoType::POINT:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPoint, ObGeographMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::LINESTRING:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographLineString, ObGeographMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::POLYGON:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographPolygon, ObGeographMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::GEOMETRYCOLLECTION:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographGeometrycollection, ObGeographMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::MULTIPOINT:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipoint, ObGeographMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::MULTILINESTRING:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultilinestring, ObGeographMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-              break;
-          }
-          break;
-        case common::ObGeoType::MULTIPOLYGON:
-          switch (g2->type()) {
-            case common::ObGeoType::POINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographPoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::LINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographLineString> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::POLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographPolygon> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::GEOMETRYCOLLECTION:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographGeometrycollection> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOINT:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographMultipoint> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTILINESTRING:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographMultilinestring> :: eval(g1, g2, context, result);
-              break;
-            case common::ObGeoType::MULTIPOLYGON:
-              ret = Functype::template EvalTreeBiGeog<ObGeographMultipolygon, ObGeographMultipolygon> :: eval(g1, g2, context, result);
-              break;
-            default:
-              ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-              break;
-          }
-          break;
-        default:
-          ret = OB_ERR_NOT_IMPLEMENTED_FOR_GEOGRAPHIC_SRS;
-          break;
-      }
+      ret = eval_tree_binary_geog(g1, g2, context, result);
       break;
     default:
       ret = OB_ERR_GIS_INVALID_DATA;
@@ -1146,6 +1215,98 @@ int ObIGeoDispatcher<RetType, Functype>::eval_geo_func_inner(
         break;
       }
     }
+  }
+  return ret;
+}
+
+template <typename RetType, typename Functype>
+int ObIGeoDispatcher<RetType, Functype>::eval_geo_func_split(
+    const common::ObGeoEvalCtx &gis_context, RetType &result,
+    BinaryEvalFn wkb_cart_fn, BinaryEvalFn wkb_geog_fn,
+    BinaryEvalFn tree_fn)
+{
+  int ret = OB_SUCCESS;
+  lib::MemoryContext mem_ctx = gis_context.get_mem_ctx();
+  WITH_CONTEXT(mem_ctx) {
+    if (CURRENT_CONTEXT->attr_.label_ != "GISModule" || CURRENT_CONTEXT->attr_.use_500()) {
+      OB_LOG(WARN, "should not use other label expect GISModule",
+          K(ret), K(CURRENT_CONTEXT->attr_), K(CURRENT_CONTEXT->attr_.use_500()), K(lbt()));
+    }
+    try {
+      switch (gis_context.get_geo_count()) {
+      case 1: {
+        const common::ObGeometry *g = gis_context.get_geo_arg(0);
+        if (OB_ISNULL(g)) {
+          ret = OB_ERR_NULL_VALUE;
+        } else if (g->is_tree()) {
+          ret = eval_tree_unary(g, gis_context, result);
+        } else if (OB_ISNULL(g->val())) {
+          ret = OB_ERR_NULL_VALUE;
+        } else {
+          ret = eval_wkb_unary(g, gis_context, result);
+        }
+        break;
+      }
+      case 2: {
+        const common::ObGeometry *g1 = gis_context.get_geo_arg(0);
+        const common::ObGeometry *g2 = gis_context.get_geo_arg(1);
+        if (OB_ISNULL(g1) || OB_ISNULL(g2)) {
+          ret = OB_ERR_NULL_VALUE;
+        } else if (g1->crs() != g2->crs()) {
+          ret = OB_ERR_GIS_DIFFERENT_SRIDS;
+          OB_LOG(WARN, "invalid different srids", K(ret), K(g1->crs()), K(g2->crs()));
+        } else if (g1->crs() == common::ObGeoCRS::Geographic && OB_ISNULL(gis_context.get_srs())) {
+          ret = OB_ERR_NULL_VALUE;
+        } else if (g1->is_tree()) {
+          ret = tree_fn(g1, g2, gis_context, result);
+        } else if (OB_ISNULL(g1->val()) || OB_ISNULL(g2->val())) {
+          ret = OB_ERR_NULL_VALUE;
+        } else {
+          switch (g1->crs()) {
+          case common::ObGeoCRS::Cartesian:
+            ret = wkb_cart_fn(g1, g2, gis_context, result);
+            break;
+          case common::ObGeoCRS::Geographic:
+            ret = wkb_geog_fn(g1, g2, gis_context, result);
+            break;
+          default:
+            ret = OB_ERR_GIS_INVALID_DATA;
+            break;
+          }
+        }
+        break;
+      }
+      default: {
+        ret = OB_ERR_GIS_INVALID_DATA;
+        break;
+      }
+      }
+    } catch (...) {
+      ret = ob_boost_geometry_exception_handle();
+    }
+
+    if (OB_FAIL(ret)) {
+      switch(gis_context.get_geo_count()) {
+        case 1:{
+          OB_LOG(WARN, "geo dispatcher failed", K(ret), K(gis_context.get_geo_arg(0)->crs()),
+              K(gis_context.get_geo_arg(0)->type()));
+          break;
+        }
+        case 2:{
+          OB_LOG(WARN, "geo dispatcher failed", K(ret), K(gis_context.get_geo_arg(0)->crs()),
+              K(gis_context.get_geo_arg(0)->type()), K(gis_context.get_geo_arg(1)->crs()),
+              K(gis_context.get_geo_arg(1)->type()));
+          break;
+        }
+        default:{
+          OB_LOG(WARN, "geo dispatcher failed with unexpected geo arguments", K(ret),
+              K(gis_context.get_geo_count()));
+          break;
+        }
+      }
+    }
+  } else {
+    OB_LOG(WARN, "fail to do with context", K(ret));
   }
   return ret;
 }

@@ -526,6 +526,11 @@ class ObGeoFuncSymDifferenceImpl : public ObIGeoDispatcher<ObGeometry *, ObGeoFu
 public:
   ObGeoFuncSymDifferenceImpl();
   virtual ~ObGeoFuncSymDifferenceImpl() = default;
+
+  // function pointer type for eval_wkb_binary dispatch
+  using SymDiffWkbBinaryFn = int (*)(const common::ObGeometry *, const common::ObGeometry *,
+                                      const ObGeoEvalCtx &, ObGeometry *&);
+
   // template for unary
   OB_GEO_UNARY_FUNC_DEFAULT(ObGeometry *, OB_ERR_GIS_INVALID_DATA);
   OB_GEO_TREE_UNARY_FUNC_DEFAULT(ObGeometry *, OB_ERR_GIS_INVALID_DATA);
@@ -558,7 +563,8 @@ private:
   // assume that g1 g2 both collection
   template<typename GcTreeType>
   static int eval_symdifference_gc_gc(
-      const ObGeometry *g1, const ObGeometry *g2, const ObGeoEvalCtx &context, ObGeometry *&result)
+      const ObGeometry *g1, const ObGeometry *g2, const ObGeoEvalCtx &context, ObGeometry *&result,
+      SymDiffWkbBinaryFn eval_wkb_fn)
   {
     int ret = OB_SUCCESS;
     ObIAllocator *allocator = context.get_allocator();
@@ -609,19 +615,19 @@ private:
         LOG_WARN("fail to convert geometry tree to bin", K(ret));
       } else if (OB_FAIL(ObGeoTypeUtil::tree_to_bin(*allocator, mpt1, mpt_bin, srs))) {
         LOG_WARN("fail to convert geometry tree to bin", K(ret));
-      } else if (OB_FAIL(eval_wkb_binary(mpy_bin, g2, context, mpy_res))) {
+      } else if (OB_FAIL(eval_wkb_fn(mpy_bin, g2, context, mpy_res))) {
         LOG_WARN("fail to eval wkb binary", K(ret));
       } else if (OB_FAIL(!mpy_res->is_empty() && (ObGeoTypeUtil::simplify_multi_geo<GcTreeType>(mpy_res, *allocator)))) {
         LOG_WARN("fail to simplify result", K(ret));
       } else if (OB_FAIL(ObGeoTypeUtil::tree_to_bin(*allocator, mpy_res, mpy_res_bin, srs))) {
         LOG_WARN("fail to convert geometry tree to bin", K(ret));
-      } else if (OB_FAIL(eval_wkb_binary(mls_bin, mpy_res_bin, context, mls_res))) {
+      } else if (OB_FAIL(eval_wkb_fn(mls_bin, mpy_res_bin, context, mls_res))) {
         LOG_WARN("fail to eval wkb binary", K(ret));
       } else if (OB_FAIL(!mls_res->is_empty() && (ObGeoTypeUtil::simplify_multi_geo<GcTreeType>(mls_res, *allocator)))) {
         LOG_WARN("fail to simplify result", K(ret));
       } else if (OB_FAIL(ObGeoTypeUtil::tree_to_bin(*allocator, mls_res, mls_res_bin, srs))) {
         LOG_WARN("fail to convert geometry tree to bin", K(ret));
-      } else if (OB_FAIL(eval_wkb_binary(mpt_bin, mls_res_bin, context, result))) {
+      } else if (OB_FAIL(eval_wkb_fn(mpt_bin, mls_res_bin, context, result))) {
         LOG_WARN("fail to eval wkb binary", K(ret));
       } else if (OB_FAIL(!result->is_empty() && (ObGeoTypeUtil::simplify_multi_geo<GcTreeType>(result, *allocator)))) {
         LOG_WARN("fail to simplify result", K(ret));
