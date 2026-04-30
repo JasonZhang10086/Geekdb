@@ -1189,6 +1189,22 @@ void ObPluginVectorIndexAdaptor::update_index_id_read_scn()
   }
 }
 
+int ObPluginVectorIndexAdaptor::init_vbitmap_scn_after_snapshot_build(const share::SCN &snapshot_scn)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(vbitmap_data_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("vbitmap data is null when init vbitmap scn", K(ret), K(snapshot_scn), KP(this));
+  } else if (!snapshot_scn.is_valid_and_not_min()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid snapshot scn when init vbitmap scn", K(ret), K(snapshot_scn), KP(this));
+  } else {
+    TCWLockGuard lock_guard(vbitmap_data_->mem_data_rwlock_);
+    vbitmap_data_->scn_ = snapshot_scn;
+  }
+  return ret;
+}
+
 
 
 bool ObPluginVectorIndexAdaptor::is_pruned_read_index_id()
@@ -2122,6 +2138,36 @@ int ObPluginVectorIndexAdaptor::copy_meta_info(ObPluginVectorIndexAdaptor &other
   return ret;
 }
 
+int ObPluginVectorIndexAdaptor::inherit_index_id_watermarks_from(ObPluginVectorIndexAdaptor &other)
+{
+  int ret = OB_SUCCESS;
+  ObVectorIndexMemData *old_incr_data = other.get_incr_data();
+  SCN old_last_dml_scn;
+  SCN old_last_read_scn;
+
+  if (OB_ISNULL(old_incr_data) || OB_ISNULL(incr_data_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid adapter memdata when inheriting index id watermarks",
+             K(ret), KP(this), KP(&other), KP(incr_data_), KP(old_incr_data));
+  } else {
+    {
+      TCRLockGuard old_incr_lock_guard(old_incr_data->mem_data_rwlock_);
+      old_last_dml_scn = old_incr_data->last_dml_scn_;
+      old_last_read_scn = old_incr_data->last_read_scn_;
+    }
+    {
+      TCWLockGuard new_incr_lock_guard(incr_data_->mem_data_rwlock_);
+      if (old_last_dml_scn.is_valid() && old_last_dml_scn > incr_data_->last_dml_scn_) {
+        incr_data_->last_dml_scn_.inc_update(old_last_dml_scn);
+      }
+      if (old_last_read_scn.is_valid() && old_last_read_scn > incr_data_->last_read_scn_) {
+        incr_data_->last_read_scn_.atomic_set(old_last_read_scn);
+      }
+    }
+  }
+  return ret;
+}
+
 int ObPluginVectorIndexAdaptor::check_snap_hnswsq_index()
 {
   INIT_SUCC(ret);
@@ -3023,7 +3069,7 @@ int ObPluginVectorIndexAdaptor::complete_index_mem_data_incremental(ObVectorQuer
       FLOG_INFO("check_scan", K(can_skip_scan_4th_table), K(base_scn), K(last_dml_scn), K(base_scn>=last_dml_scn));
     }
 
-    if (OB_SUCC(ret) && can_skip_scan_4th_table && !REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
+    if (OB_SUCC(ret) && can_skip_scan_4th_table) {
       roaring::api::roaring64_bitmap_free(ctx->bitmaps_->insert_bitmap_);
       roaring::api::roaring64_bitmap_free(ctx->bitmaps_->delete_bitmap_);
       ctx->bitmaps_->insert_bitmap_ = ibitmap;
