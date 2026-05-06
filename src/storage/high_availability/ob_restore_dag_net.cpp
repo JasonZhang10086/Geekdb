@@ -3369,9 +3369,10 @@ int ObDataTabletsRestoreTask::record_server_event_()
     LOG_WARN("ctx should not be null", K(ret), KPC_(ctx));
   } else {
     share::ObLSID sys_ls_id(share::ObLSID::SYS_LS_ID);
+    ObCStringHelper helper;
     SERVER_EVENT_ADD("storage_ha", "data_tablets_restore_task",
-        "src", to_cstring(ctx_->task_.src_info_),
-        "task_id", to_cstring(ctx_->task_.task_id_),
+        "src", helper.convert(ctx_->task_.src_info_),
+        "task_id", helper.convert(ctx_->task_.task_id_),
         "is_failed", ctx_->is_failed(),
         "task_type", ObRestoreTaskType::get_str(ctx_->task_.type_));
   }
@@ -3899,9 +3900,10 @@ int ObTabletGroupRestoreTask::record_server_event_()
     LOG_WARN("ctx should not be null", K(ret), KPC_(ctx));
   } else {
     share::ObLSID sys_ls_id(share::ObLSID::SYS_LS_ID);
+    ObCStringHelper helper;
     SERVER_EVENT_ADD("storage_ha", "tablet_group_restore_task",
-        "src", to_cstring(ctx_->task_.src_info_),
-        "task_id", to_cstring(ctx_->task_.task_id_),
+        "src", helper.convert(ctx_->task_.src_info_),
+        "task_id", helper.convert(ctx_->task_.task_id_),
         "tablet_count", tablet_id_array_.count(),
         "task_type", ObRestoreTaskType::get_str(ctx_->task_.type_));
   }
@@ -4139,9 +4141,10 @@ int ObRestoreFinishTask::record_server_event_()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ctx should not be null", K(ret));
   } else {
+    ObCStringHelper helper;
     SERVER_EVENT_ADD("storage_ha", "restore_finish_task",
-      "src", to_cstring(ctx_->task_.src_info_),
-      "task_id", to_cstring(ctx_->task_.task_id_),
+      "src", helper.convert(ctx_->task_.src_info_),
+      "task_id", helper.convert(ctx_->task_.task_id_),
       "restore_type", ObRestoreTaskType::get_str(ctx_->task_.type_));
   }
   return ret;

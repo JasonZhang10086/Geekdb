@@ -20,8 +20,11 @@ endif()
 
 if(WIN32)
   list(APPEND CMAKE_PREFIX_PATH "${OB_VCPKG_DIR}")
-  set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release)
-  set(CMAKE_MAP_IMPORTED_CONFIG_MINSIZEREL Release)
+  # NOTE: CMAKE_MAP_IMPORTED_CONFIG_<CONFIG> (DEBUG/RelWithDebInfo/MinSizeRel
+  # -> Release) is set globally in cmake/Env.cmake. It forces imported
+  # targets from find_package(... CONFIG) below (and any transitive deps
+  # such as abseil/protobuf/openssl from gRPC) to resolve to their Release
+  # .lib variants, matching our Release MSVC runtime in all build types.
   find_package(gRPC CONFIG REQUIRED)
   find_package(protobuf CONFIG REQUIRED)
   set(_PROTOC $<TARGET_FILE:protobuf::protoc>)

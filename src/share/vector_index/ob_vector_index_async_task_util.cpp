@@ -1637,6 +1637,8 @@ int ObVecIndexAsyncTask::optimize_vector_index(ObPluginVectorIndexAdaptor &adapt
     LOG_WARN("failed to refresh snapshot index data", K(ret));
   } else if (OB_FAIL(adaptor.renew_single_snap_index(adaptor.get_snap_index_type() == VIAT_HNSW_BQ))) {
     LOG_WARN("fail to renew single snap index", K(ret));
+  } else if (OB_FAIL(adaptor.init_vbitmap_scn_after_snapshot_build(snapshot.version()))) {
+    LOG_WARN("failed to init vbitmap scn after snapshot build", K(ret), K(snapshot));
   }
   /* Warning!!!
   * In the process of loading data for a query, the query_lock is acquired first, followed by the adapter_map_lock.

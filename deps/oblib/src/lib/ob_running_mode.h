@@ -84,6 +84,15 @@ inline void enable_use_ipv6()
   ObRunningModeConfig::instance().use_ipv6_ = true;
 }
 
+inline consteval bool is_embed_mode()
+{
+#ifdef OB_BUILD_EMBED_MODE
+  return true;
+#else
+  return false;
+#endif
+}
+
 } //lib
 } //oceanbase
 

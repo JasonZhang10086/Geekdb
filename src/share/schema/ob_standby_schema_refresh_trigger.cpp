@@ -23,6 +23,7 @@
 #include "share/schema/ob_schema_getter_guard.h"  // ObSchemaGetterGuard
 #include "share/ob_all_tenant_info.h"  // ObAllTenantInfo, ObAllTenantInfoProxy
 #include "observer/ob_service.h"  // ObService
+#include "lib/ob_running_mode.h"
 
 namespace oceanbase
 {
@@ -38,6 +39,9 @@ int ObStandbySchemaRefreshTrigger::init()
   if (is_inited_) {
     ret = OB_INIT_TWICE;
     LOG_WARN("init twice", KR(ret));
+  } else if (lib::is_embed_mode()) {
+    is_inited_ = true;
+    LOG_INFO("ObStandbySchemaRefreshTrigger skip init in embed mode");
   } else if (OB_FAIL(ObTenantThreadHelper::create("StandbySchem",
         lib::TGDefIDs::SimpleLSService, *this))) {
     LOG_WARN("failed to create STANDBY_SCHEMA_REFRESH_TRIGGER", KR(ret));

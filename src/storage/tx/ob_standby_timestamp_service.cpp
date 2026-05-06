@@ -20,6 +20,7 @@
 #include "observer/ob_srv_network_frame.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/ls/ob_ls.h"
+#include "lib/ob_running_mode.h"
 
 namespace oceanbase
 {
@@ -53,12 +54,16 @@ int ObStandbyTimestampService::init(rpc::frame::ObReqTransport *req_transport)
 int ObStandbyTimestampService::mtl_init(ObStandbyTimestampService *&sts)
 {
   int ret = OB_SUCCESS;
-  rpc::frame::ObReqTransport *req_transport = GCTX.net_frame_->get_req_transport();
-  if (OB_ISNULL(req_transport)) {
-    ret = OB_INVALID_ARGUMENT;
-    TRANS_LOG(WARN, "invalid argument", KP(req_transport));
+  if (lib::is_embed_mode()) {
+    TRANS_LOG(INFO, "ObStandbyTimestampService skip init in embed mode");
   } else {
-    ret = sts->init(req_transport);
+    rpc::frame::ObReqTransport *req_transport = GCTX.net_frame_->get_req_transport();
+    if (OB_ISNULL(req_transport)) {
+      ret = OB_INVALID_ARGUMENT;
+      TRANS_LOG(WARN, "invalid argument", KP(req_transport));
+    } else {
+      ret = sts->init(req_transport);
+    }
   }
   return ret;
 }
