@@ -39,3 +39,8 @@ obdevtools-llvm-17.0.6-20260122.tar.gz
 
 [tools-deps]
 obshell-4.4.0.0-20260120.tgz target=community
+
+[test-utils]
+obclient-2.2.13-1.darwin.arm64.tar.gz
+libobclient-2.2.13-1.darwin.arm64.tar.gz
+ob-deploy-2.7.0.1772075635-macos-arm64.tar.gz

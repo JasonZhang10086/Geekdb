@@ -44,8 +44,16 @@ function variables_prepare {
   export task="default"
   fi
   port_gen=$((100*($(id -u)%500)+10000))
-  HOST=$(hostname -i)
-  DATA_PATH="/data/$(whoami)"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    HOST=$(ipconfig getifaddr en0 2>/dev/null || echo "127.0.0.1")
+  else
+    HOST=$(hostname -i)
+  fi
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    DATA_PATH="$HOME"
+  else
+    DATA_PATH="/data/$(whoami)"
+  fi
   IPADDRESS="127.0.0.1"
   COMPONENT="seekdb"
   if grep 'dep_create.sh' $BASE_DIR/build.sh 2>&1 >/dev/null
@@ -89,7 +97,7 @@ function mirror_create {
     echo $obs_version_info
     return 1
   fi
-  obs_version=$(echo "$obs_version_info" | grep -E "(observer|seekdb) \(OceanBase([ \_][sS]eek[dD][bB])? ([.0-9]+)\)" | grep -Eo '([.0-9]+)')
+  obs_version=$(echo "$obs_version_info" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   if [[ "$obs_version" == "" ]]
   then
     echo "can not check seekdb version"
@@ -165,7 +173,7 @@ EOF
 }
 
 function show_deploy_name {
-  echo -e "\e[1m\033[32mDeploy name: $deploy_name \033[0m"
+  echo -e "\033[1m\033[32mDeploy name: $deploy_name \033[0m"
 }
 
 function get_deploy_name {
@@ -250,7 +258,11 @@ function deploy_cluster {
     if [[ -f $config_yaml ]]
     then
       echo "Use config file: " $config_yaml
-      temp_config_yaml=$(mktemp /tmp/oceanbase-seekdb-config-XXXXXX.yaml)
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        temp_config_yaml=$(mktemp /tmp/oceanbase-seekdb-config-XXXXXX)
+      else
+        temp_config_yaml=$(mktemp /tmp/oceanbase-seekdb-config-XXXXXX.yaml)
+      fi
       cp $config_yaml $temp_config_yaml
       config_yaml=$temp_config_yaml
 
@@ -269,7 +281,11 @@ function deploy_cluster {
   fi
   if [[ -f $OBD_CLUSTER_PATH/$deploy_name/inner_config.yaml ]]
   then
-    sed -i '/$_deploy_/d' $OBD_CLUSTER_PATH/$deploy_name/inner_config.yaml
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      sed -i '' '/$_deploy_/d' $OBD_CLUSTER_PATH/$deploy_name/inner_config.yaml
+    else
+      sed -i '/$_deploy_/d' $OBD_CLUSTER_PATH/$deploy_name/inner_config.yaml
+    fi
   fi
   yaml_config_args="--config $config_yaml"
   obd cluster deploy "$deploy_name" --force --clean $yaml_config_args || exit 1
@@ -279,8 +295,7 @@ function deploy_cluster {
     do
       read -r -p "Start $deploy_name failed, do you want to edit config and continue?[Y/n]" input
       case $input in
-        [Yy]);&
-        "")
+        [Yy]|"")
         obd cluster edit-config "$deploy_name"
         if obd cluster start "$deploy_name" -f;
         then
@@ -415,7 +430,7 @@ function edit {
   obd cluster edit-config $deploy_name
   if [[ "$(grep 'config_status: NEED_REDEPLOY' $OBD_CLUSTER_PATH/$deploy_name/.data)" != "" ]]
   then
-    echo -e "\e[33mif you need redeploy, please use '$entrance redeploy -n $deploy_name'\e[0m"
+    echo -e "\033[33mif you need redeploy, please use '$entrance redeploy -n $deploy_name'\033[0m"
   fi
 }
 
@@ -446,7 +461,11 @@ function set-config {
     key="$1"
     value="$2"
     if [[ $(grep -E "^$key=" $OB_DO_GLOBAL_CONFIG) ]]; then
-      sed -i "s/^$key=.*/$key=$value/g" $OB_DO_GLOBAL_CONFIG
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        sed -i '' "s/^$key=.*/$key=$value/g" $OB_DO_GLOBAL_CONFIG
+      else
+        sed -i "s/^$key=.*/$key=$value/g" $OB_DO_GLOBAL_CONFIG
+      fi
     else
       echo "$key=$value" >> $OB_DO_GLOBAL_CONFIG
     fi
@@ -562,7 +581,7 @@ function main() {
   then
   obd env set OBD_DEPLOY_BASE_DIR "$DEPLOY_PATH"
   fi
-  OBD_DEPLOY_BASE_DIR=$(grep -Po '"OBD_DEPLOY_BASE_DIR": "(.*?)"[,}]' ./.obd/.obd_environ  | sed 's/"OBD_DEPLOY_BASE_DIR": "\(.*\)"[,}]/\1/g')
+  OBD_DEPLOY_BASE_DIR=$(awk -F'"' '/"OBD_DEPLOY_BASE_DIR"/{print $4}' ./.obd/.obd_environ 2>/dev/null)
   if [[ ! -d $OBD_DEPLOY_BASE_DIR ]]
   then
   obd env set OBD_DEPLOY_BASE_DIR "$DEPLOY_PATH"
@@ -605,8 +624,7 @@ function main() {
     [[ "$EXEC_CP" == "1" ]] && copy_sh
     mysqltest
     ;;
-    sql);&
-    sys)
+    sql|sys)
     connect
     ;;
     pid)

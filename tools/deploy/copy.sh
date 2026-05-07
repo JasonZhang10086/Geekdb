@@ -40,7 +40,11 @@ function do_install {
     fi
   fi
   target=$2
-  err_msg=$(libtool --mode=install cp $sources $target 2>&1 >/dev/null)
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    err_msg=$(cp -f $sources $target 2>&1 >/dev/null)
+  else
+    err_msg=$(libtool --mode=install cp $sources $target 2>&1 >/dev/null)
+  fi
   if [ $? -eq 0 ]
   then
     [[ "$quiet" == "false" ]] && echo -e "\033[0;32mOK\033[0m"
