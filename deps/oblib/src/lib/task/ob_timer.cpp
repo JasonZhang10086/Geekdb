@@ -15,6 +15,7 @@
  */
 
 #include "ob_timer.h"
+#include <cstdio>
 #include "lib/task/ob_timer_monitor.h"
 #include "lib/thread/ob_thread_name.h"
 #include "lib/stat/ob_diagnose_info.h"
@@ -35,7 +36,9 @@ int ObTimer::init(const char* timer_name, const ObMemAttr &attr)
   if (ObTimerService::get_instance().is_never_started()) {
     if (OB_FAIL(ObTimerService::get_instance().start())) {
       OB_LOG(ERROR, "start global ObTimerService failed", K(ret));
+#ifndef _WIN32
       ob_abort();
+#endif
     }
   }
   if (is_inited_) {
@@ -118,18 +121,8 @@ int ObTimer::set_run_wrapper_with_ret(lib::IRunWrapper *run_wrapper)
     OB_LOG(ERROR, "can not set run_wrapper after init", K(ret));
   }
   if (OB_SUCC(ret) && nullptr != run_wrapper) {
-    ObTimerService *service = run_wrapper->get_timer_service();
-    if (nullptr == service) {
-      ret = OB_ERR_UNEXPECTED;
-      OB_LOG(ERROR, "timer service got from run_wrapper is NULL", K(ret));
-    } else if (nullptr != timer_service_
-        && timer_service_->get_tenant_id() != ObTimerService::get_instance().get_tenant_id()) {
-      ret = OB_OP_NOT_ALLOW;
-      OB_LOG(ERROR, "can not change timer service from some tenant to others", K(ret));
-    } else {
-      timer_service_ = service;
-      run_wrapper_ = run_wrapper;
-    }
+    timer_service_ = &(ObTimerService::get_instance());
+    run_wrapper_ = run_wrapper;
   }
   return ret;
 }

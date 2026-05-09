@@ -52,6 +52,7 @@ public:
   bool is_valid() const { return core_table_.is_valid(); }
 
   virtual int set_init_value(const int64_t core_schema_version,
+                             const int64_t sys_schema_version,
                              const int64_t baseline_schema_version,
                              const int64_t rootservice_epoch,
                              const SCN &snapshot_gc_scn,
@@ -62,6 +63,7 @@ public:
                              const uint64_t upgrade_begin_data_version);
 
   virtual int set_tenant_init_global_stat(const int64_t core_schema_version,
+                                          const int64_t sys_schema_version,
                                           const int64_t baseline_schema_version,
                                           const SCN &snapshot_gc_scn,
                                           const int64_t ddl_epoch,
@@ -70,24 +72,17 @@ public:
                                           const uint64_t upgrade_begin_data_version);
 
   virtual int set_core_schema_version(const int64_t core_schema_version);
+  virtual int set_sys_schema_version(const int64_t sys_schema_version);
+  virtual int get_core_schema_version(int64_t &core_schema_version);
+  virtual int get_sys_schema_version(int64_t &sys_schema_version);
+  virtual int get_core_and_sys_schema_version(int64_t &core_schema_version,
+      int64_t &sys_schema_version);
   virtual int set_baseline_schema_version(const int64_t baseline_schema_version);
   virtual int inc_rootservice_epoch();
 
-  virtual int get_core_schema_version(int64_t &core_schema_version);
   virtual int get_baseline_schema_version(int64_t &baseline_schema_version);
 
   virtual int get_rootservice_epoch(int64_t &rootservice_epoch);
-
-  int update_current_data_version(const uint64_t current_data_version);
-  int get_current_data_version(uint64_t &current_data_version);
-  static int get_target_data_version_ora_rowscn(
-    const uint64_t tenant_id,
-    share::SCN &target_data_version_ora_rowscn);
-  int update_target_data_version(const uint64_t target_data_version);
-  int get_target_data_version(const bool for_update, uint64_t &target_data_version);
-  int update_upgrade_begin_data_version(const uint64_t upgrade_begin_data_version);
-  int get_upgrade_begin_data_version(const bool for_update, uint64_t &upgrade_begin_data_version);
-  int get_finish_data_version(uint64_t &finish_data_version, share::SCN &scn);
 
   virtual int get_snapshot_info(int64_t &snapshot_gc_scn,
                                 int64_t &gc_schema_version);
@@ -117,6 +112,24 @@ public:
   int update_major_refresh_mv_merge_scn(const share::SCN &scn, bool is_incremental = true);
   int get_major_refresh_mv_merge_scn(const bool for_update, share::SCN &scn);
 
+  // for change stream async index
+  static int advance_change_stream_refresh_scn(common::ObISQLClient &sql_client,
+                                               const uint64_t tenant_id,
+                                               const SCN &refresh_scn,
+                                               int64_t &affected_rows);
+  static int get_change_stream_refresh_scn(common::ObISQLClient &sql_client,
+                                           const uint64_t tenant_id,
+                                           const bool for_update,
+                                           SCN &refresh_scn);
+  // Change Stream: min LSN that change stream still depends on, for log recycling and restart.
+  static int advance_change_stream_min_dep_lsn(common::ObISQLClient &sql_client,
+                                               const uint64_t tenant_id,
+                                               const int64_t min_dep_lsn,
+                                               int64_t &affected_rows);
+  static int get_change_stream_min_dep_lsn(common::ObISQLClient &sql_client,
+                                           const uint64_t tenant_id,
+                                           const bool for_update,
+                                           int64_t &min_dep_lsn);
 private:
   static int inner_get_snapshot_gc_scn_(common::ObISQLClient &sql_client,
                                         const uint64_t tenant_id,

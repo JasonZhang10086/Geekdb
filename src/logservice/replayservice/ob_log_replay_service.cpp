@@ -19,7 +19,6 @@
 #ifdef OB_BUILD_LOG_STORAGE_COMPRESS
 #include "logservice/ob_log_compression.h"
 #endif
-#include "rootserver/ob_tenant_info_loader.h" // ObTenantInfoLoader
 #include "storage/tx_storage/ob_tenant_freezer.h"
 
 namespace oceanbase
@@ -127,7 +126,7 @@ void ReplayProcessStat::runTimerTask()
   } else if (OB_FAIL(rp_sv_->stat_all_ls_replay_process(submitted_log_size, unsubmitted_log_size,
                                                         replayed_log_size, unreplayed_log_size))) {
     CLOG_LOG(WARN, "stat_all_ls_replay_process failed", K(ret));
-  } else if (0 > submitted_log_size || 0 > unsubmitted_log_size 
+  } else if (0 > submitted_log_size || 0 > unsubmitted_log_size
             || 0 > replayed_log_size || 0 > unreplayed_log_size) {
     CLOG_LOG(WARN, "stat_all_ls_replay_process failed", K(ret));
   } else if (-1 == last_replayed_log_size_) {
@@ -220,8 +219,8 @@ int ObLogReplayService::init(PalfEnv *palf_env,
     CLOG_LOG(WARN, "invalid argument", K(ret), KP(palf_env), KP(ls_adapter), KP(allocator));
   } else if (OB_FAIL(TG_CREATE_TENANT(lib::TGDefIDs::ReplayService, tg_id_))) {
     CLOG_LOG(WARN, "fail to create thread group", K(ret));
-  } else if (OB_FAIL(MTL_REGISTER_THREAD_DYNAMIC(thread_quota, tg_id_))) {
-    CLOG_LOG(WARN, "MTL_REGISTER_THREAD_DYNAMIC failed", K(ret), K(tg_id_));
+  } else if (OB_FAIL(TG_SET_ADAPTIVE_THREAD(tg_id_, 0, thread_quota * MTL_CPU_COUNT()))) {
+    CLOG_LOG(WARN, "set adaptive thread failed", K(ret));
   } else if (OB_FAIL(replay_status_map_.init("REPLAY_STATUS", MAP_TENANT_ID))) {
     CLOG_LOG(WARN, "replay_status_map_ init error", K(ret));
   } else if (OB_FAIL(replay_stat_.init(this))) {
@@ -244,17 +243,11 @@ int ObLogReplayService::init(PalfEnv *palf_env,
 int ObLogReplayService::start()
 {
   int ret = OB_SUCCESS;
-  const ObAdaptiveStrategy adaptive_strategy(LEAST_THREAD_NUM,
-                                             ESTIMATE_TS,
-                                             EXPAND_RATE,
-                                             SHRINK_RATE);
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     CLOG_LOG(ERROR, "ObLogReplayService not inited!!!", K(ret));
   } else if (OB_FAIL(TG_SET_HANDLER_AND_START(tg_id_, *this))) {
     CLOG_LOG(ERROR, "start ObLogReplayService failed", K(ret));
-  } else if (OB_FAIL(TG_SET_ADAPTIVE_STRATEGY(tg_id_, adaptive_strategy))) {
-    CLOG_LOG(WARN, "set adaptive strategy failed", K(ret));
   } else {
     is_running_ = true;
     int tmp_ret = OB_SUCCESS;
@@ -303,7 +296,6 @@ void ObLogReplayService::destroy()
   is_inited_ = false;
   CLOG_LOG(INFO, "replay service destroy");
   if (-1 != tg_id_) {
-    MTL_UNREGISTER_THREAD_DYNAMIC(tg_id_);
     TG_DESTROY(tg_id_);
     tg_id_ = -1;
   }
@@ -457,6 +449,8 @@ int ObLogReplayService::enable(const share::ObLSID &id,
     CLOG_LOG(WARN, "replay status is not exist", K(ret), K(id));
   } else if (OB_FAIL(replay_status->enable(base_lsn, base_scn))) {
     CLOG_LOG(WARN, "replay status enable failed", K(ret), K(id), K(base_lsn), K(base_scn));
+  } else {
+    (void)update_replayable_point(SCN::max_scn());
   }
   return ret;
 }
@@ -784,28 +778,10 @@ int ObLogReplayService::get_replayable_point(SCN &replayable_scn)
 share::SCN ObLogReplayService::inner_get_replayable_point_() const
 {
   int ret = OB_SUCCESS;
-  const int64_t ADVANCED_NS_VAL = 3 * 1000 * 1000 * 1000L;
   share::SCN replayable_scn;
   const share::SCN replayable_point = replayable_point_.atomic_load();
 
   replayable_scn = replayable_point;
-  if (MTL_TENANT_ROLE_CACHE_IS_RESTORE()) {
-    rootserver::ObTenantInfoLoader *tenant_info_loader = MTL(rootserver::ObTenantInfoLoader*);
-    share::SCN recovery_until_scn;
-    if (OB_ISNULL(tenant_info_loader)) {
-      ret = OB_ERR_UNEXPECTED;
-      CLOG_LOG(WARN, "ObTenantInfoLoader is NULL", K(ret));
-    } else if (OB_FAIL(tenant_info_loader->get_recovery_until_scn(recovery_until_scn))) {
-      if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
-        CLOG_LOG(WARN, "get_recovery_until_scn failed", K(ret));
-      }
-    } else {
-      replayable_scn = SCN::min(SCN::plus(replayable_point, ADVANCED_NS_VAL), recovery_until_scn);
-    }
-    if (OB_UNLIKELY(false == replayable_scn.is_valid())) {
-      replayable_scn = replayable_point;
-    }
-  } else { }
   return replayable_scn;
 }
 

@@ -18,6 +18,7 @@
 #include "ob_storage_ha_service.h"
 #include <algorithm>
 #include <random>
+#include "lib/ob_running_mode.h"
 
 
 namespace oceanbase
@@ -41,14 +42,18 @@ ObStorageHAService::~ObStorageHAService()
 int ObStorageHAService::mtl_init(ObStorageHAService *&ha_service)
 {
   int ret = OB_SUCCESS;
-  ObLSService *ls_service = nullptr;
+  if (lib::is_embed_mode()) {
+    LOG_INFO("ObStorageHAService skip init in embed mode");
+  } else {
+    ObLSService *ls_service = nullptr;
 
-  ha_service->ls_id_array_.set_attr(ObMemAttr(MTL_ID(), "ls_id"));
-  if (OB_ISNULL(ls_service =  (MTL(ObLSService *)))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls service should not be NULL", K(ret), KP(ls_service));
-  } else if (OB_FAIL(ha_service->init(ls_service))) {
-    LOG_WARN("failed to init ha service", K(ret), KP(ls_service));
+    ha_service->ls_id_array_.set_attr(ObMemAttr(MTL_ID(), "ls_id"));
+    if (OB_ISNULL(ls_service =  (MTL(ObLSService *)))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be NULL", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ha_service->init(ls_service))) {
+      LOG_WARN("failed to init ha service", K(ret), KP(ls_service));
+    }
   }
   return ret;
 }
@@ -197,7 +202,7 @@ int ObStorageHAService::scheduler_ls_ha_handler_()
     ret = OB_NOT_INIT;
     LOG_WARN("storage ha service do not init", K(ret));
   } else {
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(_WIN32) || defined(__ANDROID__)
     std::random_device rd;
     std::mt19937 g(rd());
     std::shuffle(ls_id_array_.begin(), ls_id_array_.end(), g);
@@ -219,29 +224,7 @@ int ObStorageHAService::scheduler_ls_ha_handler_()
 
 int ObStorageHAService::do_ha_handler_(const share::ObLSID &ls_id)
 {
-  int ret = OB_SUCCESS;
-  int tmp_ret = OB_SUCCESS;
-  ObLSHandle ls_handle;
-  ObLS *ls = nullptr;
-
-  if (!is_inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("storage ha service do not init", K(ret));
-  } else if (!ls_id.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("do ha handler get invalid argument", K(ret), K(ls_id));
-  } else if (OB_FAIL(ls_service_->get_ls(ls_id, ls_handle, ObLSGetMod::HA_MOD))) {
-    LOG_WARN("failed to get ls", K(ret), K(ls_id));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls should not be NULL", K(ret), KP(ls), K(ls_id));
-  } else {
-    if (OB_SUCCESS != (tmp_ret = ls->get_ls_restore_handler()->process())) {
-      LOG_WARN("failed to do ls restore handler process", K(tmp_ret), K(ls_id));
-    }
-
-    //ls->tablets transfer
-  }
+  int ret = OB_NOT_SUPPORTED;
   return ret;
 }
 

@@ -279,6 +279,7 @@ int ObPluginVectorIndexMgr::create_partial_adapter(ObTabletID idx_tablet_id,
                                                    ObIndexType type,
                                                    ObIAllocator &allocator,
                                                    int64_t index_table_id,
+                                                  int64_t data_table_id,
                                                    ObString *vec_index_param,
                                                    int64_t dim)
 {
@@ -310,6 +311,9 @@ int ObPluginVectorIndexMgr::create_partial_adapter(ObTabletID idx_tablet_id,
       LOG_WARN("failed to set data tablet id", K(idx_tablet_id), K(type), K(data_tablet_id), KR(ret));
     } else if (OB_FAIL(tmp_vec_idx_adpt->set_table_id(record_type, index_table_id))) {
       LOG_WARN("failed to set index table id", K(idx_tablet_id), K(type), K(index_table_id), KR(ret));
+    } else if (OB_INVALID_ID != data_table_id
+               && OB_FAIL(tmp_vec_idx_adpt->set_table_id(VIRT_DATA, data_table_id))) {
+      LOG_WARN("failed to set data table id", K(idx_tablet_id), K(type), K(data_table_id), KR(ret));
     } else {
       tmp_vec_idx_adpt->set_create_type(ObPluginVectorIndexUtils::index_type_to_create_type(type));
     }
@@ -439,7 +443,7 @@ int ObPluginVectorIndexMgr::get_or_create_partial_adapter_(ObTabletID tablet_id,
     if (OB_HASH_NOT_EXIST != ret) {
       LOG_WARN("failed to get vector index adapter", K(tablet_id), KR(ret));
     } else { // not exist create new
-      if (OB_FAIL(create_partial_adapter(tablet_id, ObTabletID(), type, allocator, OB_INVALID_ID, vec_index_param, dim))) {
+      if (OB_FAIL(create_partial_adapter(tablet_id, ObTabletID(), type, allocator, OB_INVALID_ID, OB_INVALID_ID, vec_index_param, dim))) {
         LOG_WARN("failed to create tmp vector index instance with ls", K(tablet_id), K(type), KR(ret));
       } 
       if (OB_FAIL(ret) && (OB_HASH_EXIST != ret)) {
@@ -671,7 +675,7 @@ int ObPluginVectorIndexService::acquire_adapter_guard(ObLSID ls_id,
       LOG_WARN("failed to get vector index mgr for ls", KR(ret), K(ls_id));
     } else { // create new ls index mgr if not exist
       ret = OB_SUCCESS;
-      if (OB_FAIL(create_partial_adapter(ls_id, tablet_id, ObTabletID(), type, OB_INVALID_ID, vec_index_param, dim))) {
+      if (OB_FAIL(create_partial_adapter(ls_id, tablet_id, ObTabletID(), type, OB_INVALID_ID, OB_INVALID_ID, vec_index_param, dim))) {
         LOG_WARN("failed to create tmp vector index instance", K(ls_id), K(tablet_id), K(type), KR(ret));
       } 
       if (OB_FAIL(ret) && (OB_HASH_EXIST != ret)) {
@@ -688,7 +692,7 @@ int ObPluginVectorIndexService::acquire_adapter_guard(ObLSID ls_id,
     if (OB_HASH_NOT_EXIST != ret) {
       LOG_WARN("failed to get vector index adapter", K(ls_id), K(tablet_id), KR(ret));
     } else { // not exist create new
-      if (OB_FAIL(ls_index_mgr->create_partial_adapter(tablet_id, ObTabletID(), type, allocator_, OB_INVALID_ID, vec_index_param, dim))) {
+      if (OB_FAIL(ls_index_mgr->create_partial_adapter(tablet_id, ObTabletID(), type, allocator_, OB_INVALID_ID, OB_INVALID_ID, vec_index_param, dim))) {
         LOG_WARN("failed to create tmp vector index instance with ls", K(ls_id), K(tablet_id), K(type), KR(ret));
       } 
       if (OB_FAIL(ret) && (OB_HASH_EXIST != ret)) {
@@ -920,6 +924,7 @@ int ObPluginVectorIndexService::create_partial_adapter(ObLSID ls_id,
                                                        ObTabletID data_tablet_id,
                                                        ObIndexType type,
                                                        int64_t index_table_id,
+                                                       int64_t data_table_id,
                                                        ObString *vec_index_param,
                                                        int64_t dim)
 {
@@ -943,6 +948,7 @@ int ObPluginVectorIndexService::create_partial_adapter(ObLSID ls_id,
                                                           type,
                                                           allocator_,
                                                           index_table_id,
+                                                          data_table_id,
                                                           vec_index_param,
                                                           dim))) {
     LOG_WARN("set vector index adapter faild", K(ls_id), K(idx_tablet_id), KR(ret));
@@ -1035,7 +1041,6 @@ void ObPluginVectorIndexService::destroy()
       DESTROY_CONTEXT(memory_context_);
       memory_context_ = nullptr;
     }
-    alloc_.reset();
 
     // destroy vec async task
     if (OB_NOT_NULL(tenant_vec_async_task_sched_)) {
@@ -1075,8 +1080,7 @@ int ObPluginVectorIndexService::init(const uint64_t tenant_id,
                                               "VecIdxLSMgr",
                                               tenant_id))) {
     LOG_WARN("create ls mgr ", KR(ret), K(tenant_id));
-  } else if (FALSE_IT(alloc_.set_tenant_id(tenant_id))) {
-  } else if (OB_FAIL(allocator_.init(&alloc_, OB_MALLOC_MIDDLE_BLOCK_SIZE, mem_attr))) {
+  } else if (OB_FAIL(allocator_.init(nullptr, OB_MALLOC_MIDDLE_BLOCK_SIZE, mem_attr))) {
     LOG_WARN("ObTenantSrs allocator init failed.", K(ret));
   } else {
     ObSharedMemAllocMgr *shared_mem_mgr = MTL(ObSharedMemAllocMgr*);
@@ -1429,8 +1433,24 @@ int ObPluginVectorIndexMgr::replace_old_adapter(ObPluginVectorIndexAdaptor *new_
     LOG_WARN("get null adapter", KR(ret));
   } else {
     int overwrite = 0;
+    ObPluginVectorIndexAdaptor *old_adapter = nullptr;
+    int tmp_ret = complete_index_adpt_map_.get_refactored(new_adapter->get_inc_tablet_id(), old_adapter);
+    if (OB_HASH_NOT_EXIST == tmp_ret) {
+      tmp_ret = OB_SUCCESS;
+      old_adapter = nullptr;
+    }
+    if (OB_FAIL(tmp_ret)) {
+      ret = tmp_ret;
+      LOG_WARN("failed to get old complete vector index adapter before replace",
+               K(ret), K(ls_id_), KPC(new_adapter));
+    } else if (OB_NOT_NULL(old_adapter) && old_adapter != new_adapter &&
+               OB_FAIL(new_adapter->inherit_index_id_watermarks_from(*old_adapter))) {
+      LOG_WARN("failed to inherit adapter index id watermarks before replace",
+               K(ret), K(ls_id_), KPC(old_adapter), KPC(new_adapter));
+    }
     // should not fail in following process
-    if (OB_FAIL(erase_complete_adapter(new_adapter->get_inc_tablet_id()))) {
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(erase_complete_adapter(new_adapter->get_inc_tablet_id()))) {
       LOG_WARN("failed to erase new complete partial adapter", K(new_adapter->get_inc_tablet_id()), KR(ret));
     } else if (OB_FAIL(erase_complete_adapter(new_adapter->get_vbitmap_tablet_id()))) {
       LOG_WARN("failed to erase new complete partial adapter", K(new_adapter->get_vbitmap_tablet_id()), KR(ret));

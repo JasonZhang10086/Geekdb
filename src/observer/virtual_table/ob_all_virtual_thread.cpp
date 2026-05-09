@@ -82,12 +82,20 @@ int ObAllVirtualThread::inner_get_next_row(common::ObNewRow *&row)
     ret = OB_NOT_SUPPORTED;
     return ret;
     #endif
-    #ifdef __APPLE__
-    // GET_OTHER_TSI_ADDR macro relies on Linux-specific pthread/TLS memory layout.
-    // On macOS, pthread_t offset calculation cannot access other threads' TLS variables.
+    #if defined(__APPLE__) || defined(__ANDROID__)
+    // GET_OTHER_TSI_ADDR macro relies on Linux/glibc-specific pthread/TLS memory layout
+    // where pthread_self() equals the TLS segment base (TCB).
+    // On macOS and Android/Bionic, pthread_self() returns a heap struct pointer,
+    // so the offset calculation produces an invalid address.
     ret = OB_NOT_SUPPORTED;
     return ret;
     #endif
+    #ifdef _WIN32
+    // GET_OTHER_TSI_ADDR, /proc, process_vm_readv, and iovec are Linux-specific.
+    ret = OB_NOT_SUPPORTED;
+    return ret;
+    #endif
+    #ifndef _WIN32
     const int64_t col_count = output_column_ids_.count();
     pid_t pid = getpid();
     StackMgr::Guard guard(g_stack_mgr);
@@ -116,20 +124,6 @@ int ObAllVirtualThread::inner_get_next_row(common::ObNewRow *&row)
           const uint64_t col_id = output_column_ids_.at(i);
           ObObj *cells = cur_row_.cells_;
           switch (col_id) {
-            case SVR_IP: {
-              cells[i].set_varchar(ip_buf_);
-              cells[i].set_collation_type(
-                  ObCharset::get_default_collation(ObCharset::get_default_charset()));
-              break;
-            }
-            case SVR_PORT: {
-              cells[i].set_int(GCONF.self_addr_.get_port());
-              break;
-            }
-            case TENANT_ID: {
-              cells[i].set_int(0 == tenant_id ? OB_SERVER_TENANT_ID : tenant_id);
-              break;
-            }
             case TID: {
               cells[i].set_int(tid);
               break;
@@ -298,6 +292,7 @@ int ObAllVirtualThread::inner_get_next_row(common::ObNewRow *&row)
       scanner_it_ = scanner_.begin();
       is_inited_ = true;
     }
+    #endif /* !_WIN32 */
   }
   if (OB_SUCC(ret)) {
     if (OB_FAIL(scanner_it_.get_next_row(cur_row_))) {

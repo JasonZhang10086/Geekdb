@@ -17,6 +17,9 @@
 #define USING_LOG_PREFIX SERVER
 
 #include "observer/ob_dump_task_generator.h"
+#ifdef _WIN32
+#include <fcntl.h>
+#endif
 #include "lib/alloc/memory_dump.h"
 #include "lib/allocator/ob_mem_leak_checker.h"
 #include "sql/parser/ob_parser.h"
@@ -55,8 +58,7 @@ int ObDumpTaskGenerator::generate_task_from_file()
   int ret = OB_SUCCESS;
   auto &mem_dump = ObMemoryDump::get_instance();
   ObArenaAllocator allocator;
-  ObMemAttr attr(common::OB_SERVER_TENANT_ID, "dumpParser", ObCtxIds::DEFAULT_CTX_ID,
-                 lib::OB_HIGH_ALLOC);
+  ObMemAttr attr(common::OB_SERVER_TENANT_ID, "dumpParser", ObCtxIds::DEFAULT_CTX_ID);
   allocator.set_attr(attr);
   ObParser parser(allocator, SMO_DEFAULT);
   ParseResult parse_result;
@@ -147,12 +149,15 @@ void ObDumpTaskGenerator::dump_memory_leak()
   int ret = OB_SUCCESS;
   int fd = -1;
   if (-1 == (fd = ::open(ObMemoryDump::LOG_FILE,
-                         O_CREAT | O_WRONLY | O_APPEND, S_IRUSR | S_IWUSR))) {
+                         O_CREAT | O_WRONLY | O_APPEND
+#ifdef _WIN32
+                         | _O_BINARY
+#endif
+                         , S_IRUSR | S_IWUSR))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("create new file failed", K(strerror(errno)));
   } else {
-    ObMemAttr attr(common::OB_SERVER_TENANT_ID, "dumpLeak", ObCtxIds::DEFAULT_CTX_ID,		
-                   lib::OB_HIGH_ALLOC);
+    ObMemAttr attr(common::OB_SERVER_TENANT_ID, "dumpLeak", ObCtxIds::DEFAULT_CTX_ID);
     const int buf_len = 1L << 20;
     char *buf = (char*)ob_malloc(buf_len, attr);
     if (OB_ISNULL(buf)) {

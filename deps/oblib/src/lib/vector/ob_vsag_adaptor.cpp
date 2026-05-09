@@ -18,6 +18,7 @@
 
 #include "ob_vsag_adaptor.h"
 #include <map>
+#ifndef OB_BUILD_CDC_DISABLE_VSAG
 #include "vsag/vsag.h"
 #include "vsag/errors.h"
 #include "vsag/dataset.h"
@@ -25,6 +26,7 @@
 #include "vsag/index.h"
 #include "vsag/options.h"
 #include "vsag/factory.h"
+#endif
 #include "lib/utility/ob_print_utils.h"
 #include "lib/oblog/ob_log.h"
 #include "lib/worker.h"
@@ -212,11 +214,19 @@ private:
 int HnswIndexHandler::build_index(const vsag::DatasetPtr &base)
 {
   int ret = OB_SUCCESS;
-  tl::expected<std::vector<int64_t>, Error> result = index_->Build(base);
-  if (result.has_value()) {
-    LOG_DEBUG("build index success");
-  } else {
-    ret = vsag_errcode2ob(result.error().type);
+  try {
+    tl::expected<std::vector<int64_t>, Error> result = index_->Build(base);
+    if (result.has_value()) {
+      LOG_DEBUG("build index success");
+    } else {
+      ret = vsag_errcode2ob(result.error().type);
+    }
+  } catch (const std::exception &e) {
+    ret = OB_ERR_VSAG_RETURN_ERROR;
+    LOG_WARN("[OBVSAG] exception caught in build_index", "what", e.what());
+  } catch (...) {
+    ret = OB_ERR_VSAG_RETURN_ERROR;
+    LOG_WARN("[OBVSAG] unknown exception caught in build_index");
   }
   return ret;
 }

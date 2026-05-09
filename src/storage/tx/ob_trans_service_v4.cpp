@@ -210,7 +210,7 @@ int ObTransService::do_commit_tx_(ObTxDesc &tx,
   return ret;
 }
 
-#define DELETED_UNRETRYABLE_ERROR(ret) (OB_LS_IS_DELETED == ret || OB_TENANT_HAS_BEEN_DROPPED)
+#define DELETED_UNRETRYABLE_ERROR(ret) (OB_LS_IS_DELETED == ret || OB_TENANT_HAS_BEEN_DROPPED == ret)
 /*
  * try send commit msg to coordinator, and register retry task
  * if msg send fail, the retry task will retry later
@@ -1396,16 +1396,9 @@ bool ObTransService::check_ls_readable_(ObLS &ls,
 {
   int ret = OB_SUCCESS;
   bool readable = false;
-  SCN scn;
-  if (ObTxReadSnapshot::SRC::WEAK_READ_SERVICE == src || MTL_TENANT_ROLE_CACHE_IS_PRIMARY_OR_INVALID()) {
-    readable = snapshot <= ls.get_ls_wrs_handler()->get_ls_weak_read_ts();
-  } else if (OB_FAIL(ls.get_ls_replica_readable_scn(scn))) {
-    TRANS_LOG(WARN, "get ls replica readable scn fail", K(ret), K(ls.get_ls_id()));
-  } else {
-    readable = snapshot <= scn;
-    if (!readable) {
-      TRANS_LOG(INFO, "check replica readable fail", K(ret), K(snapshot), K(scn));
-    }
+  readable = snapshot <= ls.get_ls_wrs_handler()->get_ls_weak_read_ts();
+  if (!readable) {
+    TRANS_LOG(INFO, "check replica readable fail", K(ret), K(snapshot));
   }
   return readable;
 }
@@ -2261,7 +2254,6 @@ int ObTransService::handle_orphan_2pc_msg_(const ObTxMsg &msg, const bool need_c
 int ObTransService::refresh_location_cache(const share::ObLSID ls)
 {
   int ret = OB_SUCCESS;
-
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     TRANS_LOG(WARN, "ObTransService not inited", K(ret));
@@ -2271,14 +2263,11 @@ int ObTransService::refresh_location_cache(const share::ObLSID ls)
   } else if (!ls.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid argument", K(ret), K(ls));
-  } else if (OB_FAIL(location_adapter_->nonblock_renew(GCONF.cluster_id, tenant_id_, ls))) {
-    TRANS_LOG(WARN, "refresh location cache error", KR(ret), K(ls));
   } else {
     if (EXECUTE_COUNT_PER_SEC(16)) {
       TRANS_LOG(INFO, "refresh location cache success", K(ls), K(lbt()));
     }
   }
-
   return ret;
 }
 
@@ -3109,27 +3098,7 @@ int ObTransService::check_and_fill_state_info(const ObTransID &tx_id, ObStateInf
   int64_t tx_state = ObTxData::RUNNING;
   SCN version;
   if (OB_FAIL(get_tx_state_from_tx_table_(state_info.ls_id_, tx_id, tx_state, version))) {
-    if (OB_TRANS_CTX_NOT_EXIST == ret) {
-      ObLSService *ls_svr =  MTL(ObLSService *);
-      ObLSHandle handle;
-      ObLS *ls = nullptr;
-      if (OB_ISNULL(ls_svr)) {
-        ret = OB_ERR_UNEXPECTED;
-        TRANS_LOG(WARN, "log stream service is NULL", K(ret));
-      } else if (OB_FAIL(ls_svr->get_ls(state_info.ls_id_, handle, ObLSGetMod::TRANS_MOD))) {
-        TRANS_LOG(WARN, "get log stream failed", K(ret));
-      } else if (OB_ISNULL(ls = handle.get_ls())) {
-        ret = OB_TRANS_CTX_NOT_EXIST;
-      } else if (OB_FAIL(ls->get_ls_replica_readable_scn(version))) {
-        TRANS_LOG(WARN, "get ls replica readable scn fail", K(ret), K(ls->get_ls_id()));
-      } else if (version >= state_info.snapshot_version_) {
-        state_info.state_ = ObTxState::UNKNOWN;
-        state_info.version_ = version;
-      } else {
-        ret = OB_TRANS_CTX_NOT_EXIST;
-      }
-      TRANS_LOG(INFO, "get tx state from tx table fail", K(ret), K(state_info), K(tx_id), K(version));
-    }
+    TRANS_LOG(WARN, "get tx state from tx table fail", K(ret), K(state_info), K(tx_id), K(version));
   } else {
     switch (tx_state) {
       case ObTxData::COMMIT:

@@ -4,11 +4,25 @@ include(cmake/Utils.cmake)
 include(cmake/Env.cmake)
 
 project("OceanBase"
-  VERSION 1.1.0.0
+  VERSION 1.3.0.0
   DESCRIPTION "OceanBase seekdb database system"
   HOMEPAGE_URL "https://www.oceanbase.ai"
   LANGUAGES CXX C ASM)
 
+if(WIN32)
+  find_program(LLVM_LIB_PROGRAM llvm-lib)
+  if(LLVM_LIB_PROGRAM)
+    set(CMAKE_AR "${LLVM_LIB_PROGRAM}" CACHE FILEPATH "Archiver" FORCE)
+  endif()
+  add_compile_definitions(strncasecmp=_strnicmp strcasecmp=_stricmp)
+endif()
+
+if(ANDROID)
+  # Boost headers use std::unary_function removed in C++17; NDK libc++ supports this compat macro
+  add_definitions(-D_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION)
+  # Force-include Android compat header for test code portability fixes
+  add_compile_options(-include ${CMAKE_SOURCE_DIR}/include/android_compat.h)
+endif()
 
 if(ENABLE_COMPILE_DLL_MODE)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DCOMPILE_DLL_MODE")
@@ -93,7 +107,7 @@ message(STATUS "This is SOURCE dir " ${PROJECT_SOURCE_DIR})
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(STDC_SHARED_LIB "")
-set(STDC_SHARED_LIB_SYMLINK "${DEVTOOLS_DIR}/lib64/libstdc++.so")
+set(STDC_SHARED_LIB_SYMLINK "")
 
 if(APPLE)
   set(CMAKE_NO_SYSTEM_FROM_IMPORTED 1)
@@ -101,7 +115,9 @@ if(APPLE)
   if(POLICY CMP0152)
     cmake_policy(SET CMP0152 NEW)
   endif()
-  set(STDC_SHARED_LIB_SYMLINK "${DEVTOOLS_DIR}/lib64/")
+  set(STDC_SHARED_LIB_SYMLINK "${DEVTOOLS_DIR}/lib64/libstdc++.dylib")
+elseif(UNIX)
+  set(STDC_SHARED_LIB_SYMLINK "${DEVTOOLS_DIR}/lib64/libstdc++.so")
 endif()
 # Disable Boost header deprecation warnings (clang uses -Wno-#pragma-messages)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-#pragma-messages")
@@ -110,22 +126,12 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-#pragma-messages")
 if(EXISTS "${STDC_SHARED_LIB_SYMLINK}")
   file(REAL_PATH ${STDC_SHARED_LIB_SYMLINK} STDC_SHARED_LIB)
   message(STATUS "STDC_SHARED_LIB: ${STDC_SHARED_LIB}")
-else()
-  message(STATUS "STDC_SHARED_LIB: not found (path does not exist: ${STDC_SHARED_LIB_SYMLINK})")
-endif()
-
-set(HYPERSCAN_LIB "")
-set(HYPERSCAN_SHARED_LIB "")
-if (${ARCHITECTURE} STREQUAL "x86_64")
-  set(HYPERSCAN_LIB "${DEP_DIR}/lib/libhs.a")
-  set(HYPERSCAN_SHARED_LIB_SYMLINK "${DEP_DIR}/lib/libhs.so")
-  file(REAL_PATH ${HYPERSCAN_SHARED_LIB_SYMLINK} HYPERSCAN_SHARED_LIB)
-  message(STATUS "HYPERSCAN_SHARED_LIB: ${HYPERSCAN_SHARED_LIB}")
 endif()
 
 add_subdirectory(deps/oblib)
 add_subdirectory(src/objit)
 add_subdirectory(src)
+add_subdirectory(sqlite-benchmark)
 
 include(CMakeDependentOption)
 # OB_BUILD_PACKAGE => include tools and build them.
@@ -179,7 +185,13 @@ elseif (OB_INCLUDE_TOOLS)
   add_subdirectory(tools EXCLUDE_FROM_ALL)
 endif()
 
-if(NOT APPLE)
+if(ANDROID)
+  # Android: no packaging needed
+elseif(APPLE)
+  if(CMAKE_BUILD_TGZ)
+    include(cmake/TGZ.cmake)
+  endif()
+elseif(UNIX)
   if (CMAKE_BUILD_RPM)
     include(cmake/RPM.cmake)
   elseif(CMAKE_BUILD_DEB)
@@ -205,8 +217,9 @@ if(NOT APPLE)
       message(FATAL_ERROR "Unsupported system: ${CMAKE_SYSTEM_NAME}")
     endif()
   endif()
-elseif(APPLE)
-  if(CMAKE_BUILD_TGZ)
-    include(cmake/TGZ.cmake)
+elseif(WIN32)
+  if(OB_BUILD_PACKAGE)
+    message(STATUS "Windows package environment adapting")
+    include(cmake/WIX.cmake)
   endif()
 endif()

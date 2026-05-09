@@ -1074,7 +1074,6 @@ public:
   static int check_is_tmp_file(const common::ObString &file_name, bool &is_tmp_file);
   static int get_backup_scn(const uint64_t &tenant_id, share::SCN &scn);
   static int check_tenant_data_version_match(const uint64_t tenant_id, const uint64_t data_version);
-  static int get_full_replica_num(const uint64_t tenant_id, int64_t &replica_num);
   static int backup_scn_to_str(const uint64_t tenant_id, const share::SCN &scn, char *buf, int64_t buf_len);
   static int get_tenant_sys_time_zone_wrap(const uint64_t tenant_id, 
                                            ObFixedLengthString<common::OB_MAX_TIMESTAMP_TZ_LENGTH> &time_zone,
@@ -1386,6 +1385,10 @@ struct ObHAResultInfo
 {
 public:
   using Comment = common::ObFixedLengthString<OB_COMMENT_LENGTH>;
+#ifdef _WIN32
+#pragma push_macro("BACKUP_DATA")
+#undef BACKUP_DATA
+#endif
   enum FailedType {
     ROOT_SERVICE = 0,
     RESTORE_DATA,
@@ -1394,6 +1397,9 @@ public:
     BACKUP_CLEAN,
     MAX_FAILED_TYPE 
   };
+#ifdef _WIN32
+#pragma pop_macro("BACKUP_DATA")
+#endif
   ObHAResultInfo(const FailedType &type, const ObLSID &ls_id, const ObAddr &addr, const ObTaskId &trace_id,
       const int result);
   ObHAResultInfo(const FailedType &type, const ObAddr &addr, const ObTaskId &trace_id, const int result);
@@ -1765,6 +1771,10 @@ public:
 class BackupConfigItemPair;
 struct ObLogArchiveDestAtrr final
 {
+#ifdef _WIN32
+#pragma push_macro("OPTIONAL")
+#undef OPTIONAL
+#endif
   enum Binding {
     OPTIONAL = 0,
     MANDATORY = 1
@@ -1798,6 +1808,9 @@ struct ObLogArchiveDestAtrr final
   int64_t piece_switch_interval_;
   ObLogArchiveDestState state_;
 };
+#ifdef _WIN32
+#pragma pop_macro("OPTIONAL")
+#endif
 
 // trim '/' from right until encouter a non backslash charactor.
 int trim_right_backslash(ObBackupPathString &path);

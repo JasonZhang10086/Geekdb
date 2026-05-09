@@ -244,7 +244,7 @@ int ObDDLExecutorUtil::wait_ddl_retry_task_finish(
     LOG_INFO("start wait ddl retry task finish", K(task_id), "ddl_event_info", ObDDLEventInfo(), K(error_message));
 
     bool is_tenant_dropped = false;
-    bool is_tenant_standby = false;
+    bool is_primary_cluster = true;
     int tmp_ret = OB_SUCCESS;
     while (OB_SUCC(ret)) {
       if (OB_SUCCESS == ObDDLErrorMessageTableOperator::get_ddl_error_message(
@@ -289,11 +289,11 @@ int ObDDLExecutorUtil::wait_ddl_retry_task_finish(
           ret = OB_TENANT_HAS_BEEN_DROPPED;
           LOG_WARN("tenant has been dropped", K(ret), K(tenant_id));
         }
-        
+
         if (OB_FAIL(ret)) {
-        } else if (OB_TMP_FAIL(ObAllTenantInfoProxy::is_standby_tenant(GCTX.sql_proxy_, tenant_id, is_tenant_standby))) {
-          LOG_WARN("check is standby tenant failed", K(tmp_ret), K(tenant_id));
-        } else if (is_tenant_standby) {
+        } else if (OB_TMP_FAIL(ObShareUtil::is_primary_cluster(is_primary_cluster))) {
+          LOG_WARN("fail to check whether is primary cluster", KR(ret), K(is_primary_cluster));
+        } else if (!is_primary_cluster) {
           ret = OB_STANDBY_READ_ONLY;
           FORWARD_USER_ERROR(ret, "DDL execution status is undecided, please check later if it finishes successfully or not.");
           LOG_WARN("tenant is standby now, stop wait", K(ret), K(tenant_id));
@@ -339,10 +339,8 @@ int ObDDLExecutorUtil::cancel_ddl_task(const int64_t tenant_id, obrpc::ObCommonR
   obrpc::ObCancelTaskArg rpc_arg;
   rpc_arg.task_id_ = *ObCurTraceId::get_trace_id();
 
-  ObAddr rs_leader_addr;
-  if (OB_FAIL(GCTX.rs_mgr_->get_master_root_server(rs_leader_addr))) {
-    LOG_WARN("fail to get rootservice address", K(ret));
-  } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(rs_leader_addr).cancel_sys_task(rpc_arg))) {
+  ObAddr rs_leader_addr = GCTX.self_addr();;
+  if (OB_FAIL(GCTX.srv_rpc_proxy_->to(rs_leader_addr).cancel_sys_task(rpc_arg))) {
     if (OB_ENTRY_NOT_EXIST == ret) {
       ret = OB_SUCCESS;
     } else {
@@ -355,6 +353,34 @@ int ObDDLExecutorUtil::cancel_ddl_task(const int64_t tenant_id, obrpc::ObCommonR
     "trace_id", *ObCurTraceId::get_trace_id(),
     "rpc_dest", rs_leader_addr);
   LOG_INFO("finish cancel ddl task", K(ret), K(rpc_arg), K(rs_leader_addr), "ddl_event_info", ObDDLEventInfo());
+  return ret;
+}
+
+template<class ARG, class RES>
+int ObDDLExecutorUtil::execute_pcreate_table(obrpc::ObCommonRpcProxy &common_rpc_proxy, ObSQLSessionInfo * my_session, const char* parallel_ddl_type,
+                                            int (ObCommonRpcProxy::*rpc_func)(const ARG&, RES&, const ObRpcOpts&), const ARG &arg, RES &res,
+                                            const uint64_t tenant_id)
+{
+  int ret = OB_SUCCESS;
+  int64_t start_time = ObTimeUtility::current_time();
+  ObTimeoutCtx ctx;
+  if (OB_FAIL(ctx.set_timeout(common_rpc_proxy.get_timeout()))) {
+    LOG_WARN("fail to set timeout ctx", KR(ret));
+  } else if (OB_FAIL((common_rpc_proxy.*rpc_func)(arg, res, ObRpcOpts()))) {
+    LOG_WARN("rpc proxy create table failed", KR(ret), "dst", common_rpc_proxy.get_server());
+  } else {
+    int64_t refresh_time = ObTimeUtility::current_time();
+    if (OB_FAIL(ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(
+        ctx, my_session, tenant_id, res.schema_version_, res.do_nothing_))) {
+      LOG_WARN("fail to check paralleld ddl schema in sync", KR(ret), K(res));
+    }
+    int64_t end_time = ObTimeUtility::current_time();
+    LOG_INFO(parallel_ddl_type, KR(ret),
+            "tenant_id", tenant_id,
+            "cost", end_time - start_time,
+            "execute_time", refresh_time - start_time,
+            "wait_schema", end_time - refresh_time);
+  }
   return ret;
 }
 

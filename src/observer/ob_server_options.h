@@ -25,7 +25,7 @@ namespace oceanbase {
 namespace observer {
 
 /**
- * 记录命令行参数
+ * Record command line arguments
  */
 class ObServerOptions final
 {
@@ -51,6 +51,15 @@ public:
   KeyValueArray       parameters_;
   KeyValueArray       variables_;
   const char *        devname_ = nullptr;
+
+  // Primary-Standby configuration
+  common::ObSqlString role_;      // PRIMARY or STANDBY
+
+#ifdef _WIN32
+  bool    install_service_ = false;
+  bool    remove_service_  = false;
+  bool    run_as_service_  = false;
+#endif
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObServerOptions);

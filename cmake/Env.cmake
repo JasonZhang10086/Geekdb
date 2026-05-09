@@ -1,3 +1,12 @@
+# Detect Android early (before project()). ANDROID_ABI is a cache variable
+# passed via -D when cross-compiling with the NDK toolchain.
+if(ANDROID_ABI)
+  set(OB_ANDROID ON)
+  message(STATUS "Android NDK cross-compilation detected (ABI: ${ANDROID_ABI})")
+else()
+  set(OB_ANDROID OFF)
+endif()
+
 ob_define(DEBUG_PREFIX "-fdebug-prefix-map=${CMAKE_SOURCE_DIR}=.")
 ob_define(FILE_PREFIX "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
 ob_define(OB_LD_BIN ld)
@@ -55,7 +64,17 @@ ob_define(ASAN_DISABLE_STACK ON)
 # 开源模式默认支持系统租户使用向量索引
 ob_define(OB_BUILD_SYS_VEC_IDX ON)
 
-EXECUTE_PROCESS(COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE)
+if(WIN32)
+  EXECUTE_PROCESS(COMMAND powershell -NoProfile -Command "$env:PROCESSOR_ARCHITECTURE"
+    OUTPUT_VARIABLE ARCHITECTURE)
+  STRING(TOLOWER "${ARCHITECTURE}" ARCHITECTURE)
+  STRING(STRIP "${ARCHITECTURE}" ARCHITECTURE)
+elseif(OB_ANDROID)
+  set(ARCHITECTURE "aarch64")
+else()
+  EXECUTE_PROCESS(COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE)
+endif()
+message(STATUS "ARCHITECTURE: ${ARCHITECTURE}")
 
 if(WITH_COVERAGE)
   # -ftest-coverage to generate .gcno file
@@ -107,9 +126,26 @@ if(ENABLE_HOTFUNC)
 endif()
 
 set(BOLT_OPT "")
+if((NOT APPLE) AND (ENABLE_BOLT OR (NOT DEFINED ENABLE_BOLT AND ENABLE_BOLT_AUTO)) AND NOT OB_BUILD_OPENSOURCE)
+  if( ${ARCHITECTURE} STREQUAL "x86_64" )
+    message(STATUS "build with bolt opt (x86_64)")
+    set(BOLT_OPT "-Wl,--emit-relocs")
+    ob_define(OB_ENABLE_BOLT ON)
+  endif()
+endif()
 
 message(STATUS "Using C++20 standard")
-set(CMAKE_CXX_FLAGS "-std=gnu++20")
+if(WIN32)
+  set(CMAKE_CXX_FLAGS "/std:c++20")
+  set(DEBUG_PREFIX "")
+  set(FILE_PREFIX "")
+elseif(OB_ANDROID)
+  set(CMAKE_CXX_STANDARD 20)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS ON)
+else()
+  set(CMAKE_CXX_FLAGS "-std=gnu++20")
+endif()
 
 if(OB_DISABLE_PIE)
   message(STATUS "build without pie")
@@ -147,7 +183,7 @@ if (OB_BUILD_SYS_VEC_IDX)
 endif()
  
 # should not use initial-exec for tls-model if building OBCDC.
-if(BUILD_CDC_ONLY)
+if(BUILD_CDC_ONLY OR BUILD_EMBED_MODE)
   add_definitions(-DOB_BUILD_CDC_DISABLE_VSAG)
 else()
   if(NOT BUILD_EMBED_MODE)
@@ -171,7 +207,29 @@ set(OB_OBJCOPY_BIN "${DEVTOOLS_DIR}/bin/objcopy")
 set(CMAKE_TOOLCHAIN_PATH "${DEVTOOLS_DIR}")
 set(GCC_DEVTOOL_PATH "${CMAKE_SOURCE_DIR}/deps/3rd/usr/local/oceanbase")
 set(COMPACT_UNWIND_FLAG "")
-if(APPLE)
+if(OB_ANDROID)
+  # Android NDK: compilers set by toolchain file, no RELRO, no devtools.
+  # Must be checked before APPLE since APPLE is true on macOS host even during cross-compile,
+  # and Env.cmake runs before project() which would set ANDROID.
+  set(OB_CLANG_BIN "clang")
+  set(OB_CLANGXX_BIN "clang++")
+  # NDK toolchain bin dir (derive from ANDROID_NDK_HOME or CMAKE_TOOLCHAIN_FILE)
+  if(DEFINED ENV{ANDROID_NDK_HOME})
+    set(_NDK_TOOLCHAIN_BIN "$ENV{ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/darwin-x86_64/bin")
+  else()
+    # Derive from toolchain file path: .../build/cmake/android.toolchain.cmake -> .../toolchains/llvm/prebuilt/*/bin
+    get_filename_component(_NDK_ROOT "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)
+    get_filename_component(_NDK_ROOT "${_NDK_ROOT}" DIRECTORY)
+    get_filename_component(_NDK_ROOT "${_NDK_ROOT}" DIRECTORY)
+    file(GLOB _NDK_TOOLCHAIN_BIN "${_NDK_ROOT}/toolchains/llvm/prebuilt/*/bin")
+    list(GET _NDK_TOOLCHAIN_BIN 0 _NDK_TOOLCHAIN_BIN)
+  endif()
+  set(OB_CC "${_NDK_TOOLCHAIN_BIN}/clang")
+  set(OB_CXX "${_NDK_TOOLCHAIN_BIN}/clang++")
+  set(OB_LD_BIN "${_NDK_TOOLCHAIN_BIN}/ld.lld")
+  set(OB_OBJCOPY_BIN "${_NDK_TOOLCHAIN_BIN}/llvm-objcopy")
+  message(STATUS "NDK toolchain bin: ${_NDK_TOOLCHAIN_BIN}")
+elseif(APPLE)
   ob_define(SYS_INCLUDE_DIR "/usr")
   add_definitions(-D_DARWIN_C_SOURCE)
   set(OB_CLANG_BIN "clang")
@@ -192,7 +250,63 @@ if(APPLE)
   if(MACOS_MAJOR LESS 15)
     set(COMPACT_UNWIND_FLAG "-Wl,-no_compact_unwind")
   endif()
-else()
+elseif(WIN32)
+  set(OB_CC "clang-cl")
+  set(OB_CXX "clang-cl")
+  add_definitions(-DWIN32_LEAN_AND_MEAN -DNOMINMAX)
+
+  # All bundled / vcpkg-provided vendor libraries (s2.lib, sqlite3.lib,
+  # zlib.lib, ...) are built against the Release MSVC runtime. Using /MDd
+  # in a Debug build makes MSVC STL set _ITERATOR_DEBUG_LEVEL=2, which
+  # then trips #pragma detect_mismatch at link time against those
+  # vendor .obj files built with _ITERATOR_DEBUG_LEVEL=0. Force the
+  # Release runtime (MultiThreadedDLL) for all configs on Windows and
+  # pin _ITERATOR_DEBUG_LEVEL=0 to match vendor libs.
+  cmake_policy(SET CMP0091 NEW)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+      CACHE STRING "MSVC runtime library (must match vendor libs)" FORCE)
+  add_definitions(-D_ITERATOR_DEBUG_LEVEL=0)
+  # vcpkg ships both Release (lib/) and Debug (debug/lib/) variants of
+  # several libraries (gRPC, protobuf, abseil, ...). In a Debug build CMake
+  # would otherwise resolve imported targets from find_package(... CONFIG)
+  # to the /MDd + _ITERATOR_DEBUG_LEVEL=2 Debug variant and trip
+  # #pragma detect_mismatch at link time. Map every non-Release config to
+  # Release so imported targets always resolve to the Release .lib that
+  # matches our CRT. These must be set at top-level (Env.cmake is included
+  # before project() in root CMakeLists.txt) so the mapping is in scope of
+  # every target that links against such imported libs.
+  set(CMAKE_MAP_IMPORTED_CONFIG_DEBUG Release)
+  set(CMAKE_MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release)
+  set(CMAKE_MAP_IMPORTED_CONFIG_MINSIZEREL Release)
+  # /RTC1 requires the debug CRT; strip it so Debug builds can use /MD.
+  foreach(_flag_var
+          CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG
+          CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+    if(DEFINED ${_flag_var})
+      string(REGEX REPLACE "[ \t]*/RTC[^ \t]*" "" ${_flag_var} "${${_flag_var}}")
+    endif()
+  endforeach()
+  unset(_flag_var)
+  ob_define(SYS_UM_INCLUDE_DIR "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um")
+  ob_define(SYS_UCRT_INCLUDE_DIR "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt")
+  ob_define(SYS_SHARED_INCLUDE_DIR "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared")
+  ob_define(OB_VCPKG_DIR "C:/VcpkgInstalled/x64-windows")
+  ob_define(OB_OPENSSL_DIR "C:/Program Files/OpenSSL-Win64")
+  ob_define(OB_LLVM_DIR "C:/Program Files/LLVM18")
+  ob_define(OB_VSAG_DIR "${DEP_3RD_DIR}/vsag")
+  # These paths may arrive from -D... with native Windows backslashes. If we
+  # let them flow unchanged into configure_file()/file(WRITE) outputs, CMake
+  # 3.20+ will reject the resulting scripts with "Invalid character escape"
+  # (\w, \d, \x, ...). Normalize once here so all downstream uses are safe.
+  foreach(_ob_path_var
+          SYS_UM_INCLUDE_DIR SYS_UCRT_INCLUDE_DIR SYS_SHARED_INCLUDE_DIR
+          OB_VCPKG_DIR OB_OPENSSL_DIR OB_LLVM_DIR OB_VSAG_DIR)
+    if(DEFINED ${_ob_path_var})
+      file(TO_CMAKE_PATH "${${_ob_path_var}}" ${_ob_path_var})
+    endif()
+  endforeach()
+  unset(_ob_path_var)
+elseif(UNIX)
   # NO RELERO: -Wl,-znorelro
   # Partial RELRO: -Wl,-z,relro
   # Full RELRO: -Wl,-z,relro,-z,now
@@ -229,7 +343,9 @@ if (OB_USE_CLANG)
       NO_DEFAULT_PATH)
   endif()
 
-  set(OB_OBJCOPY_BIN "${DEVTOOLS_DIR}/bin/llvm-objcopy")
+  if(NOT OB_ANDROID)
+    set(OB_OBJCOPY_BIN "${DEVTOOLS_DIR}/bin/llvm-objcopy")
+  endif()
 
   find_file(GCC9 devtools
     PATH ${GCC_DEVTOOL_PATH}
@@ -246,12 +362,20 @@ if (OB_USE_CLANG)
   endif()
 
   if (OB_USE_LLD)
-    if(APPLE)
+    if(OB_ANDROID)
+      # Android: OB_LD_BIN already set in platform block above
+    elseif(APPLE)
       set(LD_OPT "-Wl,-dead_strip")
       set(REORDER_COMP_OPT "-ffunction-sections -fdata-sections")
       set(REORDER_LINK_OPT "-Wl,-dead_strip")
       set(OB_LD_BIN "ld")
-    else()
+    elseif(WIN32)
+      set(LD_OPT "/INCREMENTAL:NO")
+      set(REORDER_COMP_OPT "")
+      set(REORDER_LINK_OPT "/OPT:REF /OPT:ICF ${HOTFUNC_OPT}")
+      set(OB_LD_BIN "lld-link")
+      set(OB_LIB_BIN "llvm-lib")
+    elseif(UNIX)
       set(LD_OPT "-fuse-ld=${DEVTOOLS_DIR}/bin/ld.lld -Wno-unused-command-line-argument")
       set(REORDER_COMP_OPT "-ffunction-sections -fdata-sections -fdebug-info-for-profiling")
       set(REORDER_LINK_OPT "-Wl,--no-rosegment,--build-id=sha1,--gc-sections,--icf=safe ${HOTFUNC_OPT}")
@@ -259,12 +383,33 @@ if (OB_USE_CLANG)
     endif()
   endif()
 
-  if(APPLE)
+  if(OB_ANDROID)
+    # Android NDK: no --gcc-toolchain, no macOS frameworks
+    # -D_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION: Boost headers use std::unary_function removed in C++17
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG} -D_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION")
+    set(CMAKE_C_FLAGS "${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
+    set(CMAKE_CXX_LINK_FLAGS "${LD_OPT} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT}")
+    set(CMAKE_SHARED_LINKER_FLAGS "${LD_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT}")
+    set(CMAKE_EXE_LINKER_FLAGS "${LD_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT} ${CMAKE_COVERAGE_EXE_LINKER_OPTIONS}")
+  elseif(APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
     set(CMAKE_C_FLAGS "${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
     set(CMAKE_CXX_LINK_FLAGS "${LD_OPT} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT}")
     set(CMAKE_SHARED_LINKER_FLAGS "${LD_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT} ${COMPACT_UNWIND_FLAG}")
     set(CMAKE_EXE_LINKER_FLAGS "${LD_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT} ${CMAKE_COVERAGE_EXE_LINKER_OPTIONS} ${COMPACT_UNWIND_FLAG}")
+  elseif(WIN32)
+    set(OB_OBJCOPY_BIN "llvm-objcopy")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} ${REORDER_COMP_OPT} ${CMAKE_ASAN_FLAG}")
+    set(CMAKE_C_FLAGS "${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} ${REORDER_COMP_OPT} ${CMAKE_ASAN_FLAG}")
+    set(CMAKE_CXX_LINK_FLAGS "${LD_OPT} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT}")
+    set(CMAKE_SHARED_LINKER_FLAGS "/INCREMENTAL:NO ${LD_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT} ${COMPACT_UNWIND_FLAG}")
+    set(CMAKE_EXE_LINKER_FLAGS "/INCREMENTAL:NO ${LD_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT} ${CMAKE_COVERAGE_EXE_LINKER_OPTIONS} ${COMPACT_UNWIND_FLAG}")
+  elseif(OB_ANDROID)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
+    set(CMAKE_C_FLAGS "${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
+    set(CMAKE_CXX_LINK_FLAGS "${LD_OPT} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT}")
+    set(CMAKE_SHARED_LINKER_FLAGS "${LD_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT}")
+    set(CMAKE_EXE_LINKER_FLAGS "${LD_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT} ${CMAKE_COVERAGE_EXE_LINKER_OPTIONS}")
   else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --gcc-toolchain=${GCC9} -gdwarf-4 ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
     set(CMAKE_C_FLAGS "--gcc-toolchain=${GCC9} -gdwarf-4 ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
@@ -304,30 +449,35 @@ endif()
 option(OB_ENABLE_AVX2 "enable AVX2 and related instruction set support for x86_64" OFF)
 
 include(CMakeFindBinUtils)
-EXECUTE_PROCESS(COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE )
-if( ${ARCHITECTURE} STREQUAL "x86_64" )
-    set(MTUNE_CFLAGS -mtune=core2)
-    set(ARCH_LDFLAGS "")
-    set(OCI_DEVEL_INC "${DEP_3RD_DIR}/usr/include/oracle/12.2/client64")
+
+if(${ARCHITECTURE} STREQUAL "amd64")
+  set(MARCH_CFLAGS "")
+  set(MTUNE_CFLAGS "-mtune=generic")
+  set(ARCH_LDFLAGS "")
+elseif(${ARCHITECTURE} STREQUAL "x86_64")
+  set(MTUNE_CFLAGS -mtune=core2)
+  set(ARCH_LDFLAGS "")
+  set(OCI_DEVEL_INC "${DEP_3RD_DIR}/usr/include/oracle/12.2/client64")
 else()
-    if (${OB_DISABLE_LSE})
-      message(STATUS "build with no-lse")
-      set(MARCH_CFLAGS "-march=armv8-a+crc")
-    else()
-      message(STATUS "build with lse")
-      set(MARCH_CFLAGS "-march=armv8-a+crc+lse")
+  if (${OB_DISABLE_LSE})
+    message(STATUS "build with no-lse")
+    set(MARCH_CFLAGS "-march=armv8-a+crc")
+  else()
+    message(STATUS "build with lse")
+    set(MARCH_CFLAGS "-march=armv8-a+crc+lse")
+  endif()
+  set(MTUNE_CFLAGS "-mtune=generic" )
+  if(OB_ANDROID)
+    set(ARCH_LDFLAGS "-latomic")
+  elseif(APPLE)
+    find_library(ATOMIC_LIB atomic)
+    if(ATOMIC_LIB)
+      set(ARCH_LDFLAGS "${ATOMIC_LIB}")
     endif()
-    set(MTUNE_CFLAGS "-mtune=generic" )
-    if(APPLE)
-      # macOS doesn't support -l:libatomic.a format, use -latomic or find the library
-      find_library(ATOMIC_LIB atomic)
-      if(ATOMIC_LIB)
-        set(ARCH_LDFLAGS "${ATOMIC_LIB}")
-      endif()
-    else()
-      set(ARCH_LDFLAGS "-l:libatomic.a")
-    endif()
-    set(OCI_DEVEL_INC "${DEP_3RD_DIR}/usr/include/oracle/19.10/client64")
+  else()
+    set(ARCH_LDFLAGS "-l:libatomic.a")
+  endif()
+  set(OCI_DEVEL_INC "${DEP_3RD_DIR}/usr/include/oracle/19.10/client64")
 endif()
 
 # AIO library detection for Ubuntu >= 24.04 and Debian >= 13

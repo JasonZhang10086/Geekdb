@@ -119,7 +119,6 @@ public:
   ObIOFlag &operator=(const ObIOFlag &other)
   {
     this->flag_ = other.flag_;
-    this->func_type_ = other.func_type_;
     this->group_id_ = other.group_id_;
     this->sys_module_id_ = other.sys_module_id_;
     return *this;
@@ -186,6 +185,7 @@ private:
   // needs to close device and fd.
   static constexpr int64_t IO_CLOSE_DEV_AND_FD_BIT = 1;
   static constexpr int64_t IO_RESERVED_BIT = 64 - IO_MODE_BIT
+                                                - IO_FUNC_TYPE_BIT
                                                 - IO_WAIT_EVENT_BIT
                                                 - IO_SYNC_FLAG_BIT
                                                 - IO_DETECT_FLAG_BIT
@@ -199,15 +199,15 @@ private:
     int64_t flag_;
     struct {
       int64_t mode_ : IO_MODE_BIT;
-      uint8_t func_type_ : IO_FUNC_TYPE_BIT; 
+      int64_t func_type_ : IO_FUNC_TYPE_BIT;
       int64_t wait_event_id_ : IO_WAIT_EVENT_BIT;
-      bool is_sync_ : IO_SYNC_FLAG_BIT;
-      bool is_unlimited_ : IO_UNLIMITED_FLAG_BIT;
-      bool is_detect_ : IO_DETECT_FLAG_BIT;
-      bool is_write_through_ : IO_WRITE_THROUGH_BIT; 
-      bool is_sealed_ : IO_SEALED_FLAG_BIT;
-      bool is_time_detect_ : IO_TIME_DETECT_FLAG_BIT;
-      bool need_close_dev_and_fd_ : IO_CLOSE_DEV_AND_FD_BIT;
+      int64_t is_sync_ : IO_SYNC_FLAG_BIT;
+      int64_t is_unlimited_ : IO_UNLIMITED_FLAG_BIT;
+      int64_t is_detect_ : IO_DETECT_FLAG_BIT;
+      int64_t is_write_through_ : IO_WRITE_THROUGH_BIT;
+      int64_t is_sealed_ : IO_SEALED_FLAG_BIT;
+      int64_t is_time_detect_ : IO_TIME_DETECT_FLAG_BIT;
+      int64_t need_close_dev_and_fd_ : IO_CLOSE_DEV_AND_FD_BIT;
       int64_t reserved_ : IO_RESERVED_BIT;
     };
   };
@@ -514,7 +514,7 @@ public:
   ObThreadCond &get_cond() { return cond_; }
 
   TO_STRING_KV(K(is_inited_), K(is_finished_), K(is_canceled_), K(has_estimated_), K(complete_size_), K(offset_), K(size_),
-               K(timeout_us_), K(result_ref_cnt_), K(out_ref_cnt_), K(flag_), K(ret_code_), K(tenant_id_), K(tenant_io_mgr_),
+               K(timeout_us_), K(result_ref_cnt_), K(out_ref_cnt_), K(flag_), K(ret_code_), K(tenant_id_), KP(tenant_io_mgr_),
                KP(user_data_buf_), KP(buf_), KP(io_callback_), K_(time_log));
   DISALLOW_COPY_AND_ASSIGN(ObIOResult);
 private:
@@ -542,7 +542,7 @@ private:
   int64_t timeout_us_;
   uint64_t tenant_id_;
   int64_t aligned_size_;
-  ObRefHolder<ObTenantIOManager> tenant_io_mgr_;
+  ObTenantIOManager *tenant_io_mgr_;
   const char *buf_;
   char *user_data_buf_; //actual data buf without cb, allocated by thpe calling layer
   ObIOCallback *io_callback_;
@@ -588,13 +588,13 @@ public:
   int try_alloc_buf_until_timeout(char *&io_buf);
   bool can_callback() const;
   void free_io_buffer();
-  void inc_ref(const char *msg = nullptr);
-  void dec_ref(const char *msg = nullptr);
+  void inc_ref();
+  void dec_ref();
 
   int64_t get_remained_io_timeout_us();
 
   TO_STRING_KV(K(is_inited_), K(tenant_id_), KP(control_block_), K(ref_cnt_), KP(raw_buf_), K(fd_), K(is_object_device_req()),
-               K(trace_id_), K(retry_count_), K(tenant_io_mgr_), K_(storage_accesser),
+               K(trace_id_), K(retry_count_), KP(tenant_io_mgr_), K_(storage_accesser),
                KPC(io_result_), K_(part_id));
 private:
   friend class ObTenantIOSchedulerV2;
@@ -630,7 +630,7 @@ protected:
   int64_t align_offset_;
   ObIOCB *control_block_;
   uint64_t tenant_id_;
-  ObRefHolder<ObTenantIOManager> tenant_io_mgr_;
+  ObTenantIOManager *tenant_io_mgr_;
   ObRefHolder<ObStorageAccesser> storage_accesser_;
   ObIOFd fd_;
   ObCurTraceId::TraceId trace_id_;
@@ -698,7 +698,7 @@ public:
   ObIOCallback *get_io_callback();
   bool need_trace() const;
   storage::ObStorageCheckID get_check_id() const { return storage::ObStorageCheckID::IO_HANDLE; }
-  TO_STRING_KV("io_result", to_cstring(result_));
+  TO_STRING_KV_WITH_HELPER("io_result", helper.convert(result_));
 
 private:
   void estimate();
@@ -748,12 +748,11 @@ public:
     ParamConfig();
     ~ParamConfig();
     bool is_valid() const;
-    TO_STRING_KV(K_(memory_limit), K_(callback_thread_count), K_(enable_io_tracer), K_(object_storage_io_timeout_ms));
+    TO_STRING_KV(K_(memory_limit), K_(callback_thread_count), K_(object_storage_io_timeout_ms));
 
   public:
     int64_t memory_limit_;
     int64_t callback_thread_count_;
-    bool enable_io_tracer_;
     int64_t object_storage_io_timeout_ms_;
   };
 

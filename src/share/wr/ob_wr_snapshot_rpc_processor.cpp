@@ -413,9 +413,8 @@ int ObWrSyncUserModifySettingsTaskP::process()
         if (OB_ISNULL(GCTX.sql_proxy_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("GCTX.sql_proxy_ is null", K(ret));
-        } else if (OB_FAIL(sql.assign_fmt("update /*+ WORKLOAD_REPOSITORY */ %s set %s=%ld  "
-                                          "where tenant_id=%ld",
-                      OB_WR_CONTROL_TNAME, TOPN_SQL_COLUMN_NAME, arg.get_topnsql(), arg.get_tenant_id()))) {
+        } else if (OB_FAIL(sql.assign_fmt("update /*+ WORKLOAD_REPOSITORY */ %s set %s=%ld",
+                      OB_WR_CONTROL_TNAME, TOPN_SQL_COLUMN_NAME, arg.get_topnsql()))) {
           LOG_WARN("failed to format update snapshot info sql", KR(ret));
         } else if (OB_FAIL(
                       ObWrCollector::exec_write_sql_with_retry(gen_meta_tenant_id(arg.get_tenant_id()), sql.ptr(), affected_rows))) {
@@ -431,5 +430,13 @@ int ObWrSyncUserModifySettingsTaskP::process()
   }
   return ret;
 }
+
+// Explicit template instantiations for Windows/clang - prevents undefined symbols
+// when template methods are only referenced from other TUs (e.g. ob_srv_xlator_partition.cpp)
+template class ObWrBaseSnapshotTaskP<obrpc::OB_WR_ASYNC_SNAPSHOT_TASK>;
+template class ObWrBaseSnapshotTaskP<obrpc::OB_WR_ASYNC_PURGE_SNAPSHOT_TASK>;
+template class ObWrBaseSnapshotTaskP<obrpc::OB_WR_SYNC_USER_SUBMIT_SNAPSHOT_TASK>;
+template class ObWrBaseSnapshotTaskP<obrpc::OB_WR_SYNC_USER_MODIFY_SETTINGS_TASK>;
+
 }  // end of namespace share
 }  // end of namespace oceanbase

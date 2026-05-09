@@ -74,7 +74,7 @@ int prepare_backup_dest(ObBackupDest &backup_dest)
       "%s/test_backup_linked_item_write_and_read_dir", getcwd(buf, sizeof(buf))))) {
 #else
   if (OB_FAIL(databuff_printf(test_dir_, sizeof(test_dir_),
-      "%s/test_backup_linked_item_write_and_read_dir", get_current_dir_name()))) {
+      "%s/test_backup_linked_item_write_and_read_dir", getcwd(NULL, 0)))) {
 #endif
     LOG_WARN("failed to databuff_printf", K(ret));
   } else if (OB_FAIL(databuff_printf(test_dir_uri_, sizeof(test_dir_uri_), "file://%s", test_dir_))) {
@@ -315,7 +315,7 @@ void TestBackupLinkedReaderWriter::SetUp()
   const int64_t block_size = common::OB_MALLOC_BIG_BLOCK_SIZE;
   TestDataFilePrepare::SetUp();
 
-  ret = getter.add_tenant(1, 8L * 1024L * 1024L, 2L * 1024L * 1024L * 1024L);
+  ret = getter.add_tenant(1, 8LL * 1024 * 1024, 2LL * 1024 * 1024 * 1024);
   EXPECT_EQ(OB_SUCCESS, ret);
   ret = ObKVGlobalCache::get_instance().init(&getter, bucket_num, max_cache_size, block_size);
   if (OB_INIT_TWICE == ret) {
@@ -324,7 +324,7 @@ void TestBackupLinkedReaderWriter::SetUp()
     EXPECT_EQ(OB_SUCCESS, ret);
   }
   // set observer memory limit
-  CHUNK_MGR.set_limit(8L * 1024L * 1024L * 1024L);
+  CHUNK_MGR.set_limit(8LL * 1024 * 1024 * 1024);
   static ObTenantBase tenant_ctx(OB_SYS_TENANT_ID);
   ObTenantEnv::set_tenant(&tenant_ctx);
   ObTenantIOManager *io_service = nullptr;
@@ -347,7 +347,7 @@ void TestBackupLinkedReaderWriter::clean_env_()
   char buf[PATH_MAX];
   databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_linked_item_write_and_read_dir", getcwd(buf, sizeof(buf)));
 #else
-  databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_linked_item_write_and_read_dir", get_current_dir_name());
+  databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_linked_item_write_and_read_dir", getcwd(NULL, 0));
 #endif
   system((std::string("rm -rf ") + test_dir_ + std::string("*")).c_str());
 }

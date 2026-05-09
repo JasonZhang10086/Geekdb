@@ -35,7 +35,12 @@ int ObTxDataTable::init(ObLS *ls, ObTxCtxTable *tx_ctx_table)
 {
   int ret = OB_SUCCESS;
   STATIC_ASSERT(sizeof(ObTxData) <= TX_DATA_SLICE_SIZE, "Size of ObTxData Overflow.");
+#ifdef _WIN32
+  STATIC_ASSERT(sizeof(ObUndoAction) * TX_DATA_UNDO_ACT_MAX_NUM_PER_NODE <= TX_DATA_UNDO_ACT_SPACE,
+                "ObUndoAction array overflow in ObUndoStatusNode.");
+#else
   STATIC_ASSERT(sizeof(ObUndoAction) == UNDO_ACTION_SZIE, "Size of ObUndoAction Overflow.");
+#endif
   STATIC_ASSERT(sizeof(ObUndoStatusNode) <= TX_DATA_SLICE_SIZE, "Size of ObUndoStatusNode Overflow");
 
   ObMemtableMgrHandle memtable_mgr_handle;
@@ -666,7 +671,7 @@ int ObTxDataTable::get_recycle_scn(SCN &recycle_scn)
   int ret = OB_SUCCESS;
   ObTabletHandle tablet_handle;
   ObMigrationStatus migration_status;
-  share::ObLSRestoreStatus restore_status;
+  ObRestoreStatus restore_status;
   ObTimeGuard tg("get recycle scn", 10L * 1000L * 1000L /* 10 seconds */);
   SCN min_end_scn = SCN::max_scn();
   SCN min_end_scn_from_old_tablets = SCN::max_scn();
@@ -689,7 +694,7 @@ int ObTxDataTable::get_recycle_scn(SCN &recycle_scn)
     STORAGE_LOG(INFO, "logstream is in migration state. skip recycle tx data", "ls_id", ls_->get_ls_id());
   } else if (OB_FAIL(ls_->get_restore_status(restore_status))) {
     STORAGE_LOG(WARN, "get restore status failed", KR(ret), "ls_id", ls_->get_ls_id());
-  } else if (ObLSRestoreStatus::NONE != restore_status) {
+  } else if (ObRestoreStatus::Status::NONE != restore_status.get_status()) {
     recycle_scn.set_min();
     STORAGE_LOG(INFO, "logstream is in restore state. skip recycle tx data", "ls_id", ls_->get_ls_id());
   } else if (FALSE_IT(tg.click("iterate tablets start"))) {

@@ -147,11 +147,6 @@ public:
     UNUSED(handler);
     return common::OB_NOT_SUPPORTED;
   }
-  virtual int set_adaptive_strategy(const common::ObAdaptiveStrategy &strategy)
-  {
-    UNUSED(strategy);
-    return common::OB_NOT_SUPPORTED;
-  }
   virtual int set_adaptive_thread(int64_t min_thread_num, int64_t max_thread_num)
   {
     UNUSED(min_thread_num);
@@ -346,7 +341,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(MyReentrantThread)];
+  alignas(16) char buf_[sizeof(MyReentrantThread)];
   MyReentrantThread *th_ = nullptr;
   int64_t thread_cnt_;
 
@@ -434,7 +429,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(MyThreadPool)];
+  alignas(16) char buf_[sizeof(MyThreadPool)];
   MyThreadPool *th_ = nullptr;
   int64_t thread_cnt_;
 };
@@ -542,16 +537,6 @@ public:
     }
     return ret;
   }
-  int set_adaptive_strategy(const common::ObAdaptiveStrategy &strategy) override
-  {
-    int ret = common::OB_SUCCESS;
-    if (OB_ISNULL(qth_)) {
-      ret = common::OB_ERR_UNEXPECTED;
-    } else {
-      ret = qth_->set_adaptive_strategy(strategy);
-    }
-    return ret;
-  }
   int set_adaptive_thread(int64_t min_thread_num, int64_t max_thread_num) override
   {
     int ret = common::OB_SUCCESS;
@@ -574,7 +559,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(ThreadPoolType)];
+  alignas(16) char buf_[sizeof(ThreadPoolType)];
   ThreadPoolType *qth_ = nullptr;
   int64_t min_thread_num_;
   int64_t max_thread_num_;
@@ -680,7 +665,7 @@ public:
   }
 
 private:
-  char buf_[sizeof(MyMapQueueThreadPool)];
+  alignas(16) char buf_[sizeof(MyMapQueueThreadPool)];
   MyMapQueueThreadPool *qth_ = nullptr;
   int64_t thread_num_;
 };
@@ -693,7 +678,7 @@ public:
      const int64_t task_map_size = ObDedupQueue::TASK_MAP_SIZE,
      const int64_t total_mem_limit = ObDedupQueue::TOTAL_LIMIT,
      const int64_t hold_mem_limit = ObDedupQueue::HOLD_LIMIT,
-     const int64_t page_size = ObDedupQueue::PAGE_SIZE,
+     const int64_t page_size = ObDedupQueue::ALLOC_PAGE_SIZE,
      const char *label = nullptr)
     :  thread_num_(pair.get_thread_cnt()),
        queue_size_(queue_size),
@@ -708,7 +693,7 @@ public:
      const int64_t task_map_size = ObDedupQueue::TASK_MAP_SIZE,
      const int64_t total_mem_limit = ObDedupQueue::TOTAL_LIMIT,
      const int64_t hold_mem_limit = ObDedupQueue::HOLD_LIMIT,
-     const int64_t page_size = ObDedupQueue::PAGE_SIZE,
+     const int64_t page_size = ObDedupQueue::ALLOC_PAGE_SIZE,
      const char *label = nullptr)
     :  thread_num_(thread_num),
        queue_size_(queue_size),
@@ -791,7 +776,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(common::ObDedupQueue)];
+  alignas(16) char buf_[sizeof(common::ObDedupQueue)];
   common::ObDedupQueue *qth_ = nullptr;
   int64_t thread_num_;
   const int64_t queue_size_;
@@ -919,7 +904,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(common::ObTimer)];
+  alignas(16) char buf_[sizeof(common::ObTimer)];
   common::ObTimer *timer_ = nullptr;
 };
 
@@ -996,7 +981,7 @@ public:
     }
   }
 private:
-  char buf_[sizeof(share::ObAsyncTaskQueue)];
+  alignas(16) char buf_[sizeof(share::ObAsyncTaskQueue)];
   share::ObAsyncTaskQueue *qth_ = nullptr;
   int64_t thread_cnt_;
   int64_t queue_size_;
@@ -1156,7 +1141,6 @@ public:
     int ret = TG_INVOKE(tg_id, start);                     \
     ret;                                                   \
   })
-#define TG_SET_ADAPTIVE_STRATEGY(tg_id, args...) TG_INVOKE(tg_id, set_adaptive_strategy, args)
 #define TG_SET_ADAPTIVE_THREAD(tg_id, min_thread, max_thread) TG_INVOKE(tg_id, set_adaptive_thread, min_thread, max_thread)
 #define TG_PUSH_TASK(tg_id, args...) TG_INVOKE(tg_id, push_task, args)
 #define TG_GET_QUEUE_NUM(tg_id, args...) TG_INVOKE(tg_id, get_queue_num, args)

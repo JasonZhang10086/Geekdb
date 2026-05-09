@@ -65,7 +65,6 @@ public:
     ObAddr self;
     obrpc::ObSrvRpcProxy rpc_proxy;
     obrpc::ObCommonRpcProxy rs_rpc_proxy;
-    share::ObRsMgr rs_mgr;
     self.set_ip_addr("127.0.0.1", 8086);
     rpc::frame::ObReqTransport req_transport(NULL, NULL);
     const int64_t ulmt = 128LL << 30;
@@ -148,7 +147,7 @@ void TestIndexBlockWriter::SetUp()
   // init ObRowGenerate
   ASSERT_EQ(OB_SUCCESS, row_generate_.init(table_schema_));
 
-  ret = getter.add_tenant(1, 8L * 1024L * 1024L, 2L * 1024L * 1024L * 1024L);
+  ret = getter.add_tenant(1, 8LL * 1024 * 1024, 2LL * 1024 * 1024 * 1024);
   ASSERT_EQ(OB_SUCCESS, ret);
   ret = ObKVGlobalCache::get_instance().init(&getter, bucket_num, max_cache_size, block_size);
   if (OB_INIT_TWICE == ret) {
@@ -157,12 +156,12 @@ void TestIndexBlockWriter::SetUp()
     ASSERT_EQ(OB_SUCCESS, ret);
   }
   // set observer memory limit
-  CHUNK_MGR.set_limit(8L * 1024L * 1024L * 1024L);
+  CHUNK_MGR.set_limit(8LL * 1024 * 1024 * 1024);
   EXPECT_EQ(OB_SUCCESS, init_tenant_mgr());
   ASSERT_EQ(OB_SUCCESS, common::ObClockGenerator::init());
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpBlockCache::get_instance().init("tmp_block_cache", 1));
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpPageCache::get_instance().init("sn_tmp_page_cache", 1));
-
+  ASSERT_EQ(OB_SUCCESS, ObTimerService::get_instance().start());
   static ObTenantBase tenant_ctx(OB_SYS_TENANT_ID);
   ObTenantEnv::set_tenant(&tenant_ctx);
   ObTenantIOManager *io_service = nullptr;
@@ -170,11 +169,6 @@ void TestIndexBlockWriter::SetUp()
   EXPECT_EQ(OB_SUCCESS, ObTenantIOManager::mtl_init(io_service));
   EXPECT_EQ(OB_SUCCESS, io_service->start());
   tenant_ctx.set(io_service);
-
-  ObTimerService *timer_service = nullptr;
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_new(timer_service));
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
-  tenant_ctx.set(timer_service);
 
   tmp_file::ObTenantTmpFileManager *tf_mgr = nullptr;
   EXPECT_EQ(OB_SUCCESS, mtl_new_default(tf_mgr));
@@ -196,11 +190,9 @@ void TestIndexBlockWriter::TearDown()
   tmp_file::ObTmpBlockCache::get_instance().destroy();
   tmp_file::ObTmpPageCache::get_instance().destroy();
   common::ObClockGenerator::destroy();
-  ObTimerService *timer_service = MTL(ObTimerService *);
-  ASSERT_NE(nullptr, timer_service);
-  timer_service->stop();
-  timer_service->wait();
-  timer_service->destroy();
+  ObTimerService::get_instance().stop();
+  ObTimerService::get_instance().wait();
+  ObTimerService::get_instance().destroy();
 }
 
 TEST_F(TestIndexBlockWriter, test_write_and_read)

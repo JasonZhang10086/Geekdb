@@ -36,7 +36,6 @@ class ObReqTransport;
 }
 namespace obrpc
 {
-class ObBatchRpc;
 class ObBlackistReq;
 class ObBlackistResp;
 }
@@ -199,14 +198,13 @@ private:
   static const int32_t BLACKLIST_REQ_INTERVAL = 3 * 1000 * 1000;
   // Timeout threshold used to mark one server in blacklist
   static const int32_t BLACKLIST_MARK_THRESHOLD = 10 * 1000 * 1000;
-  static const int64_t REMOVE_DST_SERVER_THRESHOLD = 60 * 60 * 1000000l;
+  static const int64_t REMOVE_DST_SERVER_THRESHOLD = 60LL * 60 * 1000000;
 private:
   bool is_inited_;
   bool is_enabled_;
   common::ObAddr self_;
   DstInfoMap dst_info_map_;
   obrpc::ObBlacklistRpcProxy blacklist_proxy_;
-  obrpc::ObBatchRpc *batch_rpc_;
   DISALLOW_COPY_AND_ASSIGN(ObServerBlacklist);
 };
 

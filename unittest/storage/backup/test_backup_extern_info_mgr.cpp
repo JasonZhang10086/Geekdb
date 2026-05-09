@@ -102,9 +102,13 @@ void TestBackupExternInfoMgr::inner_init_()
   ObBackupIoAdapter util;
 #ifdef __APPLE__
   char buf[PATH_MAX];
-  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_extern_info_mgr", getcwd(buf, sizeof(buf)));
+  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_extern_info_mgr_workdir", getcwd(buf, sizeof(buf)));
 #else
-  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_extern_info_mgr", get_current_dir_name());
+#if defined(__ANDROID__)
+  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_extern_info_mgr_workdir", getcwd(NULL, 0));
+#else
+  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_extern_info_mgr_workdir", get_current_dir_name());
+#endif
 #endif
   EXPECT_EQ(OB_SUCCESS, ret);
   ret = databuff_printf(test_dir_uri_, sizeof(test_dir_uri_), "file://%s", test_dir_);
@@ -130,7 +134,7 @@ void TestBackupExternInfoMgr::make_ls_meta_package_(ObBackupLSMetaInfo &ls_meta_
   ls_meta_info.ls_meta_package_.ls_meta_.tenant_id_ = tenant_id_;
   ls_meta_info.ls_meta_package_.ls_meta_.ls_id_ = ls_id_;
   ls_meta_info.ls_meta_package_.ls_meta_.migration_status_ = ObMigrationStatus::OB_MIGRATION_STATUS_NONE;
-  ls_meta_info.ls_meta_package_.ls_meta_.restore_status_ = ObLSRestoreStatus(ObLSRestoreStatus::Status::NONE);
+  ls_meta_info.ls_meta_package_.ls_meta_.restore_status_ = ObRestoreStatus::Status::NONE;
   ls_meta_info.ls_meta_package_.palf_meta_.prev_log_info_.lsn_.val_ = 1;
   ls_meta_info.ls_meta_package_.palf_meta_.curr_lsn_.val_ = 2;
 }

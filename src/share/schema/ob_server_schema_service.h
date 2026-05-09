@@ -925,7 +925,6 @@ public:
     const share::schema::ObRefreshSchemaStatus &schema_status,
     int64_t &target_version);
 
-  int query_tenant_status(const uint64_t tenant_id, TenantStatus &tenant_status);
   int construct_schema_version_history(const ObRefreshSchemaStatus &schema_status,
                                        const int64_t snapshot_version,
                                        const VersionHisKey &key,
@@ -1012,6 +1011,31 @@ private:
   int refresh_increment_schema(const ObRefreshSchemaStatus &schema_status);
   int refresh_full_schema(const ObRefreshSchemaStatus &schema_status,
                          common::ObIArray<share::schema::ObTableSchema> *table_schemas = nullptr);
+  int check_need_refresh_increment_sys_schema_(
+      const uint64_t tenant_id,
+      ObISQLClient &sql_client,
+      const int64_t &local_schema_version,
+      int64_t &core_schema_version,
+      bool &core_schema_change,
+      bool &sys_schema_change);
+  int refresh_increment_core_schema_(
+      const ObRefreshSchemaStatus &schema_status,
+      ObISQLClient &sql_client,
+      const int64_t &local_schema_version,
+      const int64_t &core_schema_version);
+  int refresh_increment_sys_schema_(
+      const ObRefreshSchemaStatus &schema_status,
+      ObISQLClient &sql_client,
+      const int64_t &local_schema_version,
+      const int64_t &core_schema_version,
+      const int64_t &schema_version_in_inner_table);
+  int refresh_increment_all_schema_(
+      const ObRefreshSchemaStatus &schema_status,
+      ObISQLClient &sql_client,
+      const int64_t &core_schema_version,
+      const int64_t &schema_version_in_inner_table,
+      const int64_t &local_schema_version,
+      ObSchemaMgr *&schema_mgr_for_cache);
   int refresh_tenant_full_normal_schema(
       common::ObISQLClient &sql_client,
       const ObRefreshSchemaStatus &schema_status,

@@ -24,6 +24,20 @@
 #include "lib/net/ob_addr.h"
 #include "rpc/obrpc/ob_rpc_packet.h"
 
+// Windows PThreads4W: pthread_t is a struct, not an integer
+#ifdef _WIN32
+#include <pthread.h>
+#define PTHREAD_NULL_INITIALIZER {NULL, 0}
+inline pthread_t pthread_null() {
+  pthread_t pt = PTHREAD_NULL_INITIALIZER;
+  return pt;
+}
+inline bool pthread_is_null(pthread_t pt) { return pt.p == NULL; }
+#else
+#define pthread_null() 0
+inline bool pthread_is_null(pthread_t pt) { return pt == 0; }
+#endif
+
 namespace oceanbase {
 
 namespace common
@@ -51,7 +65,6 @@ public:
     return ret;
   }
   virtual uint64_t id() const = 0;
-  virtual common::ObTimerService *get_timer_service() = 0;
 };
 
 /// \class
@@ -140,7 +153,7 @@ public:
     }
     ~JoinGuard()
     {
-      thread_joined_ = 0;
+      thread_joined_ = pthread_null();
     }
   };
   class RpcGuard : public BaseWaitGuard

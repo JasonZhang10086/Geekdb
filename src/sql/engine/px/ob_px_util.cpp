@@ -3429,86 +3429,6 @@ int ObDtlChannelUtil::get_sm_transmit_dtl_channel_set(
   return ret;
 }
 
-// for bloom filter
-int ObDtlChannelUtil::get_receive_bf_dtl_channel_set(
-  const int64_t sqc_id,
-  ObDtlChTotalInfo &ch_total_info,
-  ObDtlChSet &ch_set)
-{
-  int ret = OB_SUCCESS;
-  // receive
-  if (0 > sqc_id || sqc_id >= ch_total_info.receive_exec_server_.prefix_task_counts_.count()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("invalid sqc id", K(sqc_id), K(ret),
-      K(ch_total_info.receive_exec_server_.prefix_task_counts_.count()));
-  } else {
-    int64_t ch_cnt = 0;
-    int64_t base_chid = ch_total_info.start_channel_id_ + sqc_id;
-    int64_t receive_server_cnt = ch_total_info.receive_exec_server_.exec_addrs_.count();
-    int64_t transmit_server_cnt = ch_total_info.transmit_exec_server_.exec_addrs_.count();
-    ObIArray<ObAddr> &exec_addrs = ch_total_info.transmit_exec_server_.exec_addrs_;
-    int64_t chid = 0;
-    if (OB_FAIL(ch_set.reserve(exec_addrs.count()))) {
-      LOG_WARN("fail reserve dtl channel memory", K(ret), "channels", exec_addrs.count());
-    }
-    for (int64_t i = 0; i < exec_addrs.count() && OB_SUCC(ret); ++i) {
-      chid = base_chid + receive_server_cnt * i;
-      ObAddr &dst_addr = exec_addrs.at(i);
-      ObDtlChannelInfo ch_info;
-      bool is_local = dst_addr == GCONF.self_addr_;
-      ObDtlChannelGroup::make_receive_channel(ch_total_info.tenant_id_, dst_addr, chid, ch_info, is_local);
-      OZ(ch_set.add_channel_info(ch_info));
-      LOG_DEBUG("debug receive bloom filter channel", KP(chid), K(ch_info), K(sqc_id));
-      ++ch_cnt;
-    }
-    if (OB_SUCC(ret) && ch_cnt != transmit_server_cnt) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected status: channel count is not match", K(ch_cnt),
-        K(ch_total_info.channel_count_));
-    }
-  }
-  return ret;
-}
-
-int ObDtlChannelUtil::get_transmit_bf_dtl_channel_set(
-  const int64_t sqc_id,
-  ObDtlChTotalInfo &ch_total_info,
-  ObDtlChSet &ch_set)
-{
-  int ret = OB_SUCCESS;
-  // receive
-  if (0 > sqc_id || sqc_id >= ch_total_info.transmit_exec_server_.exec_addrs_.count()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("invalid sqc id", K(sqc_id), K(ret),
-      K(ch_total_info.transmit_exec_server_.exec_addrs_.count()));
-  } else {
-    int64_t ch_cnt = 0;
-    int64_t receive_server_cnt = ch_total_info.receive_exec_server_.exec_addrs_.count();
-    int64_t base_chid = ch_total_info.start_channel_id_ + sqc_id * receive_server_cnt;
-    int64_t chid = 0;
-    ObIArray<ObAddr> &exec_addrs = ch_total_info.receive_exec_server_.exec_addrs_;
-    if (OB_FAIL(ch_set.reserve(exec_addrs.count()))) {
-      LOG_WARN("fail reserve dtl channel memory", K(ret), "channels", exec_addrs.count());
-    }
-    for (int64_t i = 0; i < exec_addrs.count() && OB_SUCC(ret); ++i) {
-      chid = base_chid + i;
-      ObAddr &dst_addr = exec_addrs.at(i);
-      ObDtlChannelInfo ch_info;
-      bool is_local = dst_addr == GCONF.self_addr_;
-      ObDtlChannelGroup::make_transmit_channel(ch_total_info.tenant_id_, dst_addr, chid, ch_info, is_local);
-      OZ(ch_set.add_channel_info(ch_info));
-      LOG_DEBUG("debug transmit bloom filter channel", KP(chid), K(ch_info), K(sqc_id));
-      ++ch_cnt;
-    }
-    if (OB_SUCC(ret) && ch_cnt != receive_server_cnt) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected status: channel count is not match", K(ch_cnt),
-        K(ch_total_info.channel_count_));
-    }
-  }
-  return ret;
-}
-
 
 int ObExtraServerAliveCheck::check() const
 {
@@ -3744,119 +3664,13 @@ int ObPXServerAddrUtil::get_data_servers(ObExecContext &exec_ctx,
   return ret;
 }
 
-struct ObGetZonesOfServersCall
-{
-  ObGetZonesOfServersCall(
-    const ObAddrSet &server_set,
-    ObZoneSet &zone_set)
-    :  server_set_(server_set),
-        zone_set_(zone_set) {}
-  int operator()(const ObServerInfoInTable &server_info);
-
-  const ObAddrSet &server_set_;
-  ObZoneSet &zone_set_;
-};
-
-int ObGetZonesOfServersCall::operator()(const ObServerInfoInTable &server_info)
-{
-  int ret = OB_SUCCESS;
-  ret = server_set_.exist_refactored(server_info.get_server());
-  if (OB_HASH_EXIST == ret) {
-    ret = zone_set_.exist_refactored(server_info.get_zone());
-    if (OB_HASH_EXIST == ret) {
-      ret = OB_SUCCESS;
-    } else if (OB_HASH_NOT_EXIST == ret) {
-      if (OB_FAIL(zone_set_.set_refactored(server_info.get_zone()))) {
-        LOG_WARN("fail set zone to zone_set", K(ret));
-      }
-    } else {
-      LOG_WARN("fail check zone exist in zone_set", K(ret));
-    }
-  } else if (OB_HASH_NOT_EXIST == ret) {
-    ret = OB_SUCCESS;
-  } else {
-    LOG_WARN("fail check server exist in addr_set", K(ret));
-  }
-  return ret;
-}
-
-struct ObGetServersOfZonesCall
-{
-  ObGetServersOfZonesCall(
-    ObIArray<ObAddr> &servers,
-    const ObZoneSet &zone_set,
-    const ObAddrSet &data_server_set,
-    const ObAddrSet &tenant_server_set)
-    :  servers_(servers),
-        zone_set_(zone_set),
-        data_server_set_(data_server_set),
-        tenant_server_set_(tenant_server_set) {}
-  int operator()(const ObServerInfoInTable &server_info);
-
-  ObIArray<ObAddr> &servers_;
-  const ObZoneSet &zone_set_;
-  const ObAddrSet &data_server_set_;
-  const ObAddrSet &tenant_server_set_;
-};
-
-int ObGetServersOfZonesCall::operator()(const ObServerInfoInTable &server_info)
-{
-  int ret = OB_SUCCESS;
-  ret = zone_set_.exist_refactored(server_info.get_zone());
-  if (OB_HASH_EXIST == ret) {
-    // Not a data node and belongs to the current tenant.
-    ret = data_server_set_.exist_refactored(server_info.get_server());
-    if (OB_HASH_EXIST == ret) {
-      ret = OB_SUCCESS;
-    } else if (OB_HASH_NOT_EXIST == ret) {
-      ret = tenant_server_set_.exist_refactored(server_info.get_server());
-      if (OB_HASH_EXIST == ret) {
-        if (OB_FAIL(servers_.push_back(server_info.get_server()))) {
-          LOG_WARN("Fail to push back server", K(ret));
-        }
-      } else if (OB_HASH_NOT_EXIST == ret) {
-        ret = OB_SUCCESS;
-      } else {
-        LOG_WARN("fail check server exist in tenant addrset", K(ret));
-      }
-    } else {
-      LOG_WARN("fail check server exist in data addr_set", K(ret));
-    }
-  } else if (OB_HASH_NOT_EXIST == ret) {
-    ret = OB_SUCCESS;
-  } else {
-    LOG_WARN("fail check server exist in addr_set", K(ret));
-  }
-  return ret;
-}
-
 int ObPXServerAddrUtil::inner_get_zone_servers(const ObAddrSet &data_addr_set,
                                                ObIArray<ObAddr> &addrs)
 {
   int ret = OB_SUCCESS;
   addrs.reset();
-  ObZoneSet zone_set;
-  ObAddrSet tenant_addr_set;
-  ObGetZonesOfServersCall get_zones_call(data_addr_set, zone_set);
-  if (OB_FAIL(zone_set.create(data_addr_set.size()))) {
-    LOG_WARN("zone_set failed to create", K(ret), K(data_addr_set.size()));
-  } else if (OB_FAIL(SVR_TRACER.for_each_server_info(get_zones_call))) {
-    LOG_WARN("Failed to for_each_server_info", K(ret));
-  } else if (OB_FAIL(get_tenant_server_set(MTL_ID(), tenant_addr_set))) {
-    LOG_WARN("Fail to get tenant server set", K(ret));
-  }
-  FOREACH_X(addr_iter, data_addr_set, OB_SUCC(ret)) {
-    // Data nodes are placed at the front of the candidate node pool.
-    if (OB_FAIL(addrs.push_back(addr_iter->first))) {
-      LOG_WARN("addrs failed to push_back", K(ret));
-    }
-  }
-  if (OB_SUCC(ret) && !tenant_addr_set.empty()) {
-    ObGetServersOfZonesCall get_servers_call(addrs,
-              zone_set, data_addr_set, tenant_addr_set);
-    if (OB_FAIL(SVR_TRACER.for_each_server_info(get_servers_call))) {
-      LOG_WARN("Failed to for_each_server_info", K(ret));
-    }
+  if (OB_FAIL(addrs.push_back(GCTX.self_addr()))) {
+    LOG_WARN("fail to construct addrs", KR(ret));
   }
   return ret;
 }
@@ -3889,31 +3703,19 @@ int ObPXServerAddrUtil::get_tenant_server_set(const int64_t &tenant_id,
                                               ObAddrSet &tenant_server_set)
 {
   int ret = OB_SUCCESS;
-  ObUnitTableOperator unit_op;
-  ObTMArray<ObUnit> tenant_units;
   tenant_server_set.reuse();
-  sql::ObTMArray<common::ObAddr> tenant_servers;
-  int64_t renew_time = 0;
-  if (OB_FAIL(SVR_TRACER.get_alive_tenant_servers(MTL_ID(),
-                          tenant_servers, renew_time))) {
-    LOG_WARN("Fail to get alive tenant servers", K(ret), K(MTL_ID()));
-  } else if (OB_UNLIKELY(tenant_servers.empty())) {
-    LOG_WARN("Unable to retrieve the machine list for the current tenant, "
-               "reverting to PX_NODE_POLICY = DATA mode.", K(ret));
-  } else if (OB_FAIL(tenant_server_set.create(tenant_servers.size()))) {
-    LOG_WARN("fail create tenant_server_set", K(tenant_servers.size()), K(ret));
+  if (OB_FAIL(tenant_server_set.create(1))) {
+    LOG_WARN("fail create tenant_server_set", KR(ret));
   } else {
-    for (int i = 0; OB_SUCC(ret) && i < tenant_servers.count(); ++i) {
-      ret = tenant_server_set.exist_refactored(tenant_servers.at(i));
-      if (OB_HASH_EXIST == ret) {
-        ret = OB_SUCCESS;
-      } else if (OB_HASH_NOT_EXIST == ret) {
-        if (OB_FAIL(tenant_server_set.set_refactored(tenant_servers.at(i)))) {
-          LOG_WARN("fail set addr to tenant_server_set", K(ret));
-        }
-      } else {
-        LOG_WARN("fail check server exist in tenant_server_set", K(ret));
+    ret = tenant_server_set.exist_refactored(GCTX.self_addr());
+    if (OB_HASH_EXIST == ret) {
+      ret = OB_SUCCESS;
+    } else if (OB_HASH_NOT_EXIST == ret) {
+      if (OB_FAIL(tenant_server_set.set_refactored(GCTX.self_addr()))) {
+        LOG_WARN("fail set addr to tenant_server_set", K(ret));
       }
+    } else {
+      LOG_WARN("fail check server exist in tenant_server_set", K(ret));
     }
   }
   return ret;
@@ -3923,13 +3725,8 @@ int ObPXServerAddrUtil::get_tenant_servers(const int64_t &tenant_id,
                                           ObIArray<ObAddr> &tenant_servers)
 {
   int ret = OB_SUCCESS;
-  int64_t renew_time = 0;
-  if (OB_FAIL(SVR_TRACER.get_alive_tenant_servers(MTL_ID(),
-                              tenant_servers, renew_time))) {
-    LOG_WARN("Fail to get alive tenant servers", K(ret), K(MTL_ID()));
-  } else if (OB_UNLIKELY(tenant_servers.empty())) {
-    LOG_WARN("Unable to retrieve the machine list for the current tenant, "
-               "reverting to PX_NODE_POLICY = DATA mode.", K(ret));
+  if (OB_FAIL(tenant_servers.push_back(GCTX.self_addr()))) {
+    LOG_WARN("fail to push back server", KR(ret));
   }
   return ret;
 }

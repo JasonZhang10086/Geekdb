@@ -27,25 +27,6 @@ namespace share
 
 using namespace oceanbase::common;
 
-/************************* ObDeviceConnectivityCheckManager *************************/
-int ObDeviceConnectivityCheckManager::check_device_connectivity(const ObBackupDest &storage_dest)
-{
-  int ret = OB_SUCCESS;
-  ObDeviceCheckFile check_file;
-  if (OB_UNLIKELY(!storage_dest.is_valid() || !storage_dest.get_storage_info()->is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("storage_dest is invalid", KR(ret), K(storage_dest));
-  } else if (OB_UNLIKELY(storage_dest.get_storage_type() == ObStorageType::OB_STORAGE_AZBLOB)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("azblob is not supported as a storage destination in shared storage mode.", KR(ret), K(storage_dest)); 
-  } else if (OB_FAIL(check_file.check_io_permission(storage_dest))) {
-    LOG_WARN("fail to check io permission", KR(ret), K(storage_dest));
-  } else {
-    LOG_INFO("succ to check device connectivity", K(storage_dest));
-  }
-  return ret;
-}
-
 /****************************** ObDeviceCheckFile ******************************/
 const char ObDeviceCheckFile::OB_STR_CONNECTIVITY_CHECK[] = "connectivity_check";
 const char ObDeviceCheckFile::OB_SS_SUFFIX[] = ".obss";
@@ -216,7 +197,11 @@ int ObDeviceCheckFile::storage_time_to_strftime_(
   int64_t strftime_len = 0;
   time_t t = static_cast<time_t>(ts_s);
 
+#ifdef _WIN32
+  (void) localtime_s(&lt, &t);
+#else
   (void) localtime_r(&t, &lt);
+#endif
   if (OB_FAIL(format.assign("%Y%m%d"))) {
     LOG_WARN("failed to build format string", KR(ret), K(concat));
   } else if (OB_FAIL(format.append_fmt("%c", concat))) {

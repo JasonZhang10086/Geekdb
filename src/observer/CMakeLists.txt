@@ -5,7 +5,6 @@ ob_set_subtarget(ob_server ALONE
 
 ob_set_subtarget(ob_server common
   ob_dump_task_generator.cpp
-  ob_heartbeat.cpp
   ob_inner_sql_rpc_proxy.cpp
   ob_inner_sql_rpc_processor.cpp
   ob_inner_sql_connection.cpp
@@ -13,7 +12,6 @@ ob_set_subtarget(ob_server common
   ob_resource_inner_sql_connection_pool.cpp
   ob_inner_sql_read_context.cpp
   ob_inner_sql_result.cpp
-  ob_lease_state_mgr.cpp
   ob_req_time_service.cpp
   ob_root_service_monitor.cpp
   ob_rpc_extra_payload.cpp
@@ -32,15 +30,15 @@ ob_set_subtarget(ob_server common
   ob_srv_xlator_rootserver.cpp
   ob_srv_xlator_storage.cpp
   ob_tenant_duty_task.cpp
+  ob_sys_tenant_load_sys_package_service.cpp
+  ob_sys_tenant_load_sys_package_task.cpp
   ob_uniq_task_queue.cpp
   ob_startup_accel_task_handler.cpp
 )
 
 ob_set_subtarget(ob_server common_mixed
-  report/ob_ls_table_updater.cpp
   report/ob_tablet_table_updater.cpp
   report/ob_tenant_meta_checker.cpp
-  report/ob_server_meta_table_checker.cpp
 )
 
 ob_set_subtarget(ob_server dbms_job
@@ -109,8 +107,6 @@ ob_set_subtarget(ob_server net
   net/ob_ingress_bw_alloc_service.cpp
   net/ob_net_endpoint_ingress_rpc_proccessor.cpp
   net/ob_net_endpoint_ingress_rpc_struct.cpp
-  net/ob_shared_storage_net_throt_service.cpp
-  net/ob_shared_storage_net_throt_rpc_proccessor.cpp
   net/ob_shared_storage_net_throt_rpc_struct.cpp
   net/ob_rpc_reverse_keepalive.cpp
   net/ob_net_queue_traver.cpp
@@ -414,10 +410,7 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_all_virtual_load_data_stat.cpp
   virtual_table/ob_all_virtual_lock_wait_stat.cpp
   virtual_table/ob_all_virtual_long_ops_status.cpp
-  virtual_table/ob_all_virtual_tenant_snapshot_ls_replica.cpp
-  virtual_table/ob_all_virtual_tenant_snapshot_ls_replica_history.cpp
   virtual_table/ob_all_virtual_ls_info.cpp
-  virtual_table/ob_all_virtual_ls_snapshot.cpp
   virtual_table/ob_all_virtual_timestamp_service.cpp
   virtual_table/ob_all_virtual_tracepoint_info.cpp
   virtual_table/ob_all_virtual_transaction_freeze_checkpoint.cpp
@@ -485,7 +478,6 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_all_virtual_tenant_ctx_memory_info.cpp
   virtual_table/ob_all_virtual_tenant_memory_info.cpp
   virtual_table/ob_all_virtual_tenant_memstore_allocator_info.cpp
-  virtual_table/ob_all_virtual_tenant_parameter_stat.cpp
   virtual_table/ob_all_virtual_tx_stat.cpp
   virtual_table/ob_all_virtual_tx_lock_stat.cpp
   virtual_table/ob_all_virtual_tx_scheduler_stat.cpp
@@ -494,8 +486,6 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_all_virtual_tx_data.cpp
   virtual_table/ob_all_virtual_weak_read_stat.cpp
   virtual_table/ob_all_virtual_log_stat.cpp
-  virtual_table/ob_all_virtual_arbitration_member_info.cpp
-  virtual_table/ob_all_virtual_arbitration_service_status.cpp
   virtual_table/ob_all_virtual_apply_stat.cpp
   virtual_table/ob_all_virtual_replay_stat.cpp
   virtual_table/ob_all_virtual_ha_diagnose.cpp
@@ -556,9 +546,7 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_tenant_virtual_statname.cpp
   virtual_table/ob_tenant_virtual_warning.cpp
   virtual_table/ob_virtual_data_access_service.cpp
-  virtual_table/ob_virtual_obrpc_send_stat.cpp
   virtual_table/ob_virtual_open_cursor_table.cpp
-  virtual_table/ob_virtual_proxy_server_stat.cpp
   virtual_table/ob_virtual_proxy_sys_variable.cpp
   virtual_table/ob_virtual_sql_monitor.cpp
   virtual_table/ob_virtual_sql_monitor_statname.cpp
@@ -598,17 +586,20 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_all_virtual_kv_group_commit_info.cpp
   virtual_table/ob_all_virtual_plugin_info.cpp
   virtual_table/ob_all_virtual_cs_replica_tablet_stats.cpp
+  virtual_table/ob_all_virtual_change_stream_refresh_stat.cpp
   virtual_table/ob_all_virtual_dynamic_partition_table.cpp
   virtual_table/ob_all_virtual_storage_cache_task.cpp
   virtual_table/ob_all_virtual_tablet_local_cache.cpp
   virtual_table/ob_tenant_show_catalog_databases.cpp
   virtual_table/ob_all_virtual_tenant_vector_mem_info.cpp
   virtual_table/ob_all_virtual_ccl_status.cpp
+  virtual_table/ob_all_virtual_sqlite_tables.cpp
 )
 
 ob_server_add_target(ob_server)
 
 set_source_files_properties(table/htable_filter_lex.cxx PROPERTIES COMPILE_FLAGS -Wno-null-conversion)
+set_source_files_properties(table/htable_filter_tab.cxx PROPERTIES COMPILE_FLAGS -Wno-array-bounds-pointer-arithmetic)
 
 add_library(oceanbase_static
   STATIC
@@ -616,7 +607,7 @@ add_library(oceanbase_static
   ${CMAKE_CURRENT_BINARY_DIR}/ob_version.cpp)
 
 target_link_libraries(oceanbase_static
-  PUBLIC ob_base "${ob_objects}" ob_sql_static ob_storage_static ob_share_static oblib objit ob_plugin ${HYPERSCAN_LIB})
+  PUBLIC ob_base "${ob_objects}" ob_sql_static ob_storage_static ob_share_static oblib objit ob_plugin)
 
 if (OB_GPERF_MODE)
   target_link_libraries(oceanbase_static
@@ -629,7 +620,6 @@ if (OB_SO_CACHE)
     IMPORTED_LOCATION "${CMAKE_CURRENT_BINARY_DIR}/liboceanbase.so")
   target_link_libraries(oceanbase
     INTERFACE ob_base
-    ${HYPERSCAN_SHARED_LIB}
     ${STDC_SHARED_LIB})
 else()
   add_library(oceanbase
@@ -638,7 +628,6 @@ else()
     ${CMAKE_CURRENT_BINARY_DIR}/ob_version.cpp)
   target_link_libraries(oceanbase
     PUBLIC ob_base
-    ${HYPERSCAN_SHARED_LIB}
     INTERFACE
     ${STDC_SHARED_LIB}
     PRIVATE
@@ -650,8 +639,8 @@ else()
     ob_share_static
     ob_plugin
     $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--no-whole-archive>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libgcc>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libstdc++>
+    $<$<PLATFORM_ID:Linux>:-static-libgcc>
+    $<$<PLATFORM_ID:Linux>:-static-libstdc++>
     objit)
 endif()
 
@@ -664,46 +653,89 @@ if (NOT OB_USE_ASAN)
   # On macOS, malloc_hook conflicts with linked LLVM
   # LLVM's global constructors run before main() and use hooked malloc,
   # but free with system free, causing crashes
-  if (NOT APPLE)
+  if (NOT APPLE AND NOT WIN32 AND NOT ANDROID)
     set(link_malloc_hook malloc_hook)
   else()
-    message(STATUS "Disabling malloc_hook on macOS (conflicts with dynamic LLVM)")
+    message(STATUS "Disabling malloc_hook on macOS/Windows/Android")
     set(link_malloc_hook "")
   endif()
 endif()
 
-add_library(ob_main OBJECT main.cpp ob_command_line_parser.cpp)
+if(WIN32)
+  add_library(ob_main OBJECT main.cpp ob_command_line_parser.cpp ob_win_service.cpp)
+else()
+  add_library(ob_main OBJECT main.cpp ob_command_line_parser.cpp)
+endif()
 config_ccls_flag(ob_main)
 target_link_libraries(ob_main PUBLIC ob_base)
 add_executable(observer_without_bolt)
+if(WIN32)
+  # Allow duplicate symbols (weak/selectany ODR) - linker picks first definition
+  target_link_options(observer_without_bolt PRIVATE /FORCE:MULTIPLE)
+  # Link compiler-rt builtins for __udivti3 (128-bit int div)
+  get_filename_component(CLANG_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+  get_filename_component(LLVM_ROOT ${CLANG_BIN_DIR} DIRECTORY)
+  file(GLOB CLANG_RT_BUILTINS "${LLVM_ROOT}/lib/clang/*/lib/windows/clang_rt.builtins-x86_64.lib")
+  list(GET CLANG_RT_BUILTINS 0 CLANG_RT_BUILTINS_LIB)
+  if(CLANG_RT_BUILTINS_LIB)
+    target_link_libraries(observer_without_bolt PRIVATE ${CLANG_RT_BUILTINS_LIB})
+    message(STATUS "Linking compiler-rt builtins: ${CLANG_RT_BUILTINS_LIB}")
+  else()
+    message(WARNING "clang_rt.builtins-x86_64.lib not found, __udivti3 may be undefined")
+  endif()
+  # oblib_add_extra_objects creates separate .lib files not merged into oblib.lib on Windows
+  target_link_libraries(observer_without_bolt PRIVATE
+    ${CMAKE_BINARY_DIR}/deps/oblib/src/lib/compress/zstd_1_3_8/zstd_1_3_8_objs.lib
+    ${CMAKE_BINARY_DIR}/deps/oblib/src/lib/compress/zstd/zstd_objs.lib
+    ${CMAKE_BINARY_DIR}/deps/oblib/src/lib/compress/lz4/lz4-all.lib)
+  # Itanium ABI _Unwind_* stubs (Windows uses SEH; PL unwinding non-functional)
+  target_sources(observer_without_bolt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/win32_unwind_stubs.c)
+endif()
 target_link_libraries(observer_without_bolt
   PRIVATE
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--start-group>
+  $<$<AND:$<NOT:$<PLATFORM_ID:Darwin>>,$<NOT:$<PLATFORM_ID:Windows>>>:-Wl,--start-group>
   ob_main
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:ob_malloc>
+  $<$<AND:$<NOT:$<PLATFORM_ID:Darwin>>,$<NOT:$<PLATFORM_ID:Windows>>>:ob_malloc>
   oceanbase_static
   ob_sql_static
   ob_storage_static
   ob_share_static
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--end-group>
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--whole-archive>
+  $<$<PLATFORM_ID:Windows>:ob_malloc>
+  $<$<PLATFORM_ID:Windows>:synchronization>
+  $<$<AND:$<NOT:$<PLATFORM_ID:Darwin>>,$<NOT:$<PLATFORM_ID:Windows>>>:-Wl,--end-group>
+  $<$<AND:$<NOT:$<PLATFORM_ID:Darwin>>,$<NOT:$<PLATFORM_ID:Windows>>>:-Wl,--whole-archive>
   ob_plugin_export_static
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--no-whole-archive>
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--export-dynamic-symbol=obp_*>
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libgcc>
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libstdc++>
+  $<$<AND:$<NOT:$<PLATFORM_ID:Darwin>>,$<NOT:$<PLATFORM_ID:Windows>>>:-Wl,--no-whole-archive>
+  $<$<AND:$<NOT:$<PLATFORM_ID:Darwin>>,$<NOT:$<PLATFORM_ID:Windows>>>:-Wl,--export-dynamic-symbol=obp_*>
+  $<$<PLATFORM_ID:Linux>:-static-libgcc>
+  $<$<PLATFORM_ID:Linux>:-static-libstdc++>
   ${link_malloc_hook}
   ${BOLT_OPT}
 )
 
-execute_process(
-  COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && git rev-parse HEAD"
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  OUTPUT_VARIABLE GIT_REVISION)
-execute_process(
-  COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && git rev-parse --abbrev-ref HEAD"
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  OUTPUT_VARIABLE GIT_BRANCH)
+if(WIN32)
+  execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE GIT_REVISION
+    ERROR_QUIET)
+  execute_process(
+    COMMAND git rev-parse --abbrev-ref HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE GIT_BRANCH
+    ERROR_QUIET)
+else()
+  execute_process(
+    COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && git rev-parse HEAD"
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE GIT_REVISION)
+  execute_process(
+    COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && git rev-parse --abbrev-ref HEAD"
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE GIT_BRANCH)
+endif()
 if (NOT CMAKE_BUILD_TYPE)
   set(BUILD_FLAGS "default" CACHE INTERNAL "build flags")
 else()
@@ -719,21 +751,60 @@ if (OB_ENABLE_BOLT)
   add_custom_target(seekdb ALL
     DEPENDS fake_observer_bolt)
 else()
-  add_custom_command(
-    OUTPUT fake_observer
-    COMMAND mv ${CMAKE_BINARY_DIR}/src/observer/observer_without_bolt ${CMAKE_BINARY_DIR}/src/observer/seekdb
-    DEPENDS observer_without_bolt)
+  if(WIN32)
+    add_custom_command(
+      OUTPUT fake_observer
+      COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/src/observer/observer_without_bolt.exe ${CMAKE_BINARY_DIR}/src/observer/seekdb.exe
+      DEPENDS observer_without_bolt)
+  else()
+    add_custom_command(
+      OUTPUT fake_observer
+      COMMAND mv ${CMAKE_BINARY_DIR}/src/observer/observer_without_bolt ${CMAKE_BINARY_DIR}/src/observer/seekdb
+      DEPENDS observer_without_bolt)
+  endif()
   add_custom_target(seekdb ALL
     DEPENDS fake_observer)
 endif()
 
-add_custom_target(observer ALL
-  DEPENDS seekdb
-  COMMAND ${CMAKE_COMMAND} -E create_symlink
-      ${CMAKE_BINARY_DIR}/src/observer/seekdb
-      ${CMAKE_BINARY_DIR}/src/observer/observer
-  COMMENT "Creating symbol link observer to seekdb"
-)
+# ── Bundle third-party runtime DLLs next to seekdb.exe in the build tree ──
+# Without this, running build/.../seekdb.exe directly requires the user's
+# PATH to include ${OB_VCPKG_DIR}/bin etc. After this POST_BUILD step the
+# build tree is self-contained for local smoke tests (--version, unit
+# launches, debugger runs). Install/package bundling is still handled
+# separately by cmake/Pack.cmake at cpack time.
+#
+# Attached to the `seekdb` target (not `observer`) so that:
+#   * `cmake --build . --target seekdb` alone produces a runnable exe
+#   * `observer` (which DEPENDS seekdb) still triggers bundling transitively
+#   * bundling runs only once per build, not once per downstream target
+if(WIN32)
+  add_custom_command(TARGET seekdb POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+      "-DEXE=${CMAKE_BINARY_DIR}/src/observer/seekdb.exe"
+      "-DOUT_DIR=${CMAKE_BINARY_DIR}/src/observer"
+      "-DSEARCH_DIRS=${OB_VCPKG_DIR}/bin;${OB_VSAG_DIR}/bin"
+      -P "${CMAKE_SOURCE_DIR}/cmake/BundleRuntimeDllsWindows.cmake"
+    COMMENT "Bundling runtime DLLs next to seekdb.exe"
+    VERBATIM)
+endif()
+
+if(WIN32)
+  add_custom_target(observer ALL
+    DEPENDS seekdb
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${CMAKE_BINARY_DIR}/src/observer/seekdb.exe
+        ${CMAKE_BINARY_DIR}/src/observer/observer.exe
+    COMMENT "Copying seekdb to observer"
+  )
+else()
+  add_custom_target(observer ALL
+    DEPENDS seekdb
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        ${CMAKE_BINARY_DIR}/src/observer/seekdb
+        ${CMAKE_BINARY_DIR}/src/observer/observer
+    COMMENT "Creating symbol link observer to seekdb"
+  )
+endif()
 
 configure_file(../share/ob_version.cpp.in ob_version.cpp)
 

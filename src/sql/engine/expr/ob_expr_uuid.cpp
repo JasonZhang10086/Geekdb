@@ -15,11 +15,25 @@
  */
 
 #define USING_LOG_PREFIX  SQL_ENG
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#ifndef CONST
+#define CONST const
+#endif
+#include <iphlpapi.h>
+#else
 #include <sys/ioctl.h>
 #include <net/if.h>
 #ifdef __APPLE__
 #include <ifaddrs.h>
 #include <net/if_dl.h>
+#elif defined(__ANDROID__)
+#include <ifaddrs.h>
+#include <linux/if_packet.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #endif
 #include "sql/engine/expr/ob_expr_uuid.h"
 #include "sql/engine/ob_exec_context.h"
@@ -73,7 +87,33 @@ int ObUUIDNode::init()
 {
   int ret = OB_SUCCESS;
   is_inited_ = false;
-#ifdef __APPLE__
+#ifdef _WIN32
+  ULONG buf_len = 15000;
+  PIP_ADAPTER_ADDRESSES addresses = NULL;
+  bool mac_addr_found = false;
+  addresses = (IP_ADAPTER_ADDRESSES *)malloc(buf_len);
+  if (OB_ISNULL(addresses)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("allocate memory for adapter addresses failed", K(ret));
+  } else if (GetAdaptersAddresses(AF_UNSPEC, 0, NULL, addresses, &buf_len) == NO_ERROR) {
+    for (PIP_ADAPTER_ADDRESSES addr = addresses; addr && !mac_addr_found; addr = addr->Next) {
+      if (addr->PhysicalAddressLength == 6 && addr->IfType != IF_TYPE_SOFTWARE_LOOPBACK) {
+        MEMCPY(mac_addr_, addr->PhysicalAddress, 6);
+        mac_addr_found = true;
+      }
+    }
+    if (!mac_addr_found) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected error. can not get mac address", K(ret));
+    } else {
+      is_inited_ = true;
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("GetAdaptersAddresses failed", K(ret));
+  }
+  if (addresses) { free(addresses); }
+#elif defined(__APPLE__)
   // macOS: Use getifaddrs to get network interface information
   struct ifaddrs *ifaddrs_list = nullptr;
   struct ifaddrs *ifa = nullptr;
@@ -107,6 +147,47 @@ int ObUUIDNode::init()
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected error. can not get mac address", K(ret), K(errno));
     } else {
+      is_inited_ = true;
+    }
+  }
+#elif defined(__ANDROID__)
+  // Android: Use getifaddrs with AF_PACKET + sockaddr_ll
+  {
+    struct ifaddrs *ifaddr = NULL;
+    bool mac_addr_found = false;
+    if (getifaddrs(&ifaddr) == -1) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("getifaddrs failed", K(ret), K(errno));
+    } else {
+      for (struct ifaddrs *ifa = ifaddr; ifa != NULL && !mac_addr_found; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+        if (ifa->ifa_addr->sa_family != AF_PACKET) continue;
+        if (ifa->ifa_flags & IFF_LOOPBACK) continue;
+        struct sockaddr_ll *sll = (struct sockaddr_ll *)ifa->ifa_addr;
+        if (sll->sll_halen == 6) {
+          MEMCPY(mac_addr_, sll->sll_addr, 6);
+          mac_addr_found = true;
+        }
+      }
+      freeifaddrs(ifaddr);
+    }
+    if (OB_SUCC(ret) && !mac_addr_found) {
+      // RFC 4122 section 4.5: when MAC address is unavailable (Android sandbox),
+      // use random bytes with the multicast bit set as the node ID.
+      int fd = open("/dev/urandom", O_RDONLY);
+      if (fd >= 0 && read(fd, mac_addr_, 6) == 6) {
+        mac_addr_[0] |= 0x01;  // set multicast bit
+        mac_addr_found = true;
+        LOG_INFO("using random UUID node ID (no MAC available on Android)");
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to generate random UUID node ID", K(ret), K(errno));
+      }
+      if (fd >= 0) {
+        close(fd);
+      }
+    }
+    if (OB_SUCC(ret) && mac_addr_found) {
       is_inited_ = true;
     }
   }
@@ -203,9 +284,15 @@ int ObUUIDTime::time_now(uint64_t &now)
 void ObUUIDTime::reset_clock_seq()
 {
   uint8_t b[2] = {0, 0};
+#ifdef _WIN32
+  srand(static_cast<unsigned int>(time(NULL)));
+  b[0] = static_cast<uint8_t>(rand());
+  b[1] = static_cast<uint8_t>(rand());
+#else
   srandom(static_cast<unsigned int>(time(NULL)));
   b[0] = static_cast<uint8_t>(random());
   b[1] = static_cast<uint8_t>(random());
+#endif
   uint16_t seq = static_cast<uint16_t>(uint16_t(b[0] << 8) | uint16_t(b[1]));
   clock_seq_ = static_cast<uint16_t>((seq & 0x3fff) | 0x8000);
 }

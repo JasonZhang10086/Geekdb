@@ -30,7 +30,7 @@ using namespace tmp_file;
 using namespace storage;
 using namespace share::schema;
 /* ------------------------------ Mock Parameter ---------------------------- */
-static const int64_t TENANT_MEMORY = 8L * 1024L * 1024L * 1024L /* 8 GB */;
+static const int64_t TENANT_MEMORY = 8LL * 1024 * 1024 * 1024 /* 8 GB */;
 /********************************* Mock WBP *************************** */
 static const int64_t WBP_BLOCK_SIZE = ObTmpWriteBufferPool::WBP_BLOCK_SIZE; // each wbp block has 253 pages (253 * 8KB == 2024KB)
 static const int64_t SMALL_WBP_BLOCK_COUNT = 3;
@@ -43,7 +43,7 @@ static const int64_t BIG_WBP_MEM_LIMIT = BIG_WBP_BLOCK_COUNT * WBP_BLOCK_SIZE; /
 static const int64_t SMALL_WBP_IDX_CACHE_MAX_CAPACITY = ObTmpFileWBPIndexCache::INIT_BUCKET_ARRAY_CAPACITY * 2;
 /********************************* Mock Meta Tree *************************** */
 static const int64_t MAX_DATA_ITEM_ARRAY_COUNT = 2;
-static const int64_t MAX_PAGE_ITEM_COUNT = 4;   // MAX_PAGE_ITEM_COUNT * ObTmpFileGlobal::PAGE_SIZE means
+static const int64_t MAX_PAGE_ITEM_COUNT = 4;   // MAX_PAGE_ITEM_COUNT * ObTmpFileGlobal::ALLOC_PAGE_SIZE means
                                                 // the max representation range of a meta page (4 * 2MB == 8MB).
                                                 // according to the formula of summation for geometric sequence
                                                 // (S_n = a_1 * (1-q^n)/(1-q), where a_1 = 8MB, q = 4),
@@ -91,6 +91,7 @@ void TestTmpFileFlushMgr::SetUp()
   ASSERT_EQ(OB_SUCCESS, common::ObClockGenerator::init());
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpBlockCache::get_instance().init("tmp_block_cache", 1));
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpPageCache::get_instance().init("tmp_page_cache", 1));
+  ASSERT_EQ(OB_SUCCESS, ObTimerService::get_instance().start());
   static ObTenantBase tenant_ctx(OB_SYS_TENANT_ID);
   ObTenantEnv::set_tenant(&tenant_ctx);
   ObTenantIOManager *io_service = nullptr;
@@ -98,11 +99,6 @@ void TestTmpFileFlushMgr::SetUp()
   ASSERT_EQ(OB_SUCCESS, ObTenantIOManager::mtl_init(io_service));
   ASSERT_EQ(OB_SUCCESS, io_service->start());
   tenant_ctx.set(io_service);
-
-  ObTimerService *timer_service = nullptr;
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_new(timer_service));
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
-  tenant_ctx.set(timer_service);
 
   MockTenantTmpFileManager *tf_mgr = nullptr;
   ASSERT_EQ(OB_SUCCESS, mtl_new_default(tf_mgr));
@@ -133,12 +129,9 @@ void TestTmpFileFlushMgr::TearDown()
   tmp_file::ObTmpPageCache::get_instance().destroy();
   TestDataFilePrepare::TearDown();
   common::ObClockGenerator::destroy();
-
-  ObTimerService *timer_service = MTL(ObTimerService *);
-  ASSERT_NE(nullptr, timer_service);
-  timer_service->stop();
-  timer_service->wait();
-  timer_service->destroy();
+  ObTimerService::get_instance().stop();
+  ObTimerService::get_instance().wait();
+  ObTimerService::get_instance().destroy();
 }
 
 void TestTmpFileFlushMgr::create_tmp_files(const int64_t file_cnt, ObArray<ObSNTmpFileHandle> &tmp_file_handles)

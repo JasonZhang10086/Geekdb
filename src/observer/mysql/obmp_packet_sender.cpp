@@ -22,6 +22,10 @@
 #include "observer/mysql/ob_mysql_result_set.h"
 #include "sql/session/ob_sess_info_verify.h"
 #include "observer/mysql/ob_feedback_proxy_utils.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include <ctime>
 
 namespace oceanbase
 {
@@ -448,8 +452,25 @@ int ObMPPacketSender::send_error_packet(int err,
 
       struct timeval tv;
       struct tm tm;
+#ifdef _WIN32
+      {
+        FILETIME ft;
+        GetSystemTimePreciseAsFileTime(&ft);
+        ULARGE_INTEGER uli;
+        uli.LowPart = ft.dwLowDateTime;
+        uli.HighPart = ft.dwHighDateTime;
+        uint64_t us = (uli.QuadPart - 116444736000000000ULL) / 10;
+        tv.tv_sec = static_cast<long>(us / 1000000);
+        tv.tv_usec = static_cast<long>(us % 1000000);
+      }
+      {
+        time_t sec = tv.tv_sec;
+        localtime_s(&tm, &sec);
+      }
+#else
       (void)gettimeofday(&tv, NULL);
       ::localtime_r((const time_t *)&tv.tv_sec, &tm);
+#endif
 
       char tmp_msg_buf[MAX_MSG_BUF_SIZE];
       strncpy(tmp_msg_buf, message.ptr(), message.length()); // msg_buf is overwriten
@@ -759,9 +780,7 @@ int ObMPPacketSender::send_ok_packet(ObSQLSessionInfo &session, ObOKPParam &ok_p
         = (session.is_server_status_in_transaction() ? 1 : 0);
       flags.status_flags_.OB_SERVER_STATUS_AUTOCOMMIT = (ac ? 1 : 0);
       flags.status_flags_.OB_SERVER_MORE_RESULTS_EXISTS = ok_param.has_more_result_;
-      if (conn_->client_type_ == common::OB_CLIENT_NON_STANDARD) {
-        flags.status_flags_.OB_SERVER_STATUS_NO_BACKSLASH_ESCAPES = is_no_backslash_escapes;
-      }
+      flags.status_flags_.OB_SERVER_STATUS_NO_BACKSLASH_ESCAPES = is_no_backslash_escapes;
       if (!conn_->is_proxy_) {
         // in java client or others, use slow query bit to indicate partition hit or not
         flags.status_flags_.OB_SERVER_QUERY_WAS_SLOW = !ok_param.is_partition_hit_;

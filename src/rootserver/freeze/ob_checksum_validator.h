@@ -34,7 +34,6 @@ class ObTabletChecksumItem;
 namespace rootserver
 {
 class ObZoneMergeManager;
-class ObServerManager;
 struct ObFTSGroupArray;
 struct ObFTSGroup;
 struct ObFTSIndexInfo;
@@ -71,8 +70,7 @@ public:
     ObArray<share::ObTabletLSPair> &finish_tablet_ls_pair_array,
     ObArray<share::ObTabletChecksumItem> &finish_tablet_ckm_array,
     compaction::ObUncompactInfo &uncompact_info,
-    ObFTSGroupArray &fts_group_array,
-    share::ObCompactionLocalityCache  &ls_locality_cache)
+    ObFTSGroupArray &fts_group_array)
     : is_inited_(false),
       is_primary_service_(false),
       need_validate_index_ckm_(false),
@@ -80,7 +78,6 @@ public:
       cross_cluster_ckm_sync_finish_(false),
       stop_(stop),
       tenant_id_(tenant_id),
-      expected_epoch_(OB_INVALID_ID),
       table_id_(OB_INVALID_ID),
       freeze_info_(),
       major_merge_start_us_(0),
@@ -98,8 +95,7 @@ public:
       simple_schema_(nullptr),
       table_compaction_info_(),
       replica_ckm_items_(false/*need_map*/),
-      last_table_ckm_items_(tenant_id),
-      ls_locality_cache_(ls_locality_cache)
+      last_table_ckm_items_(tenant_id)
   {}
   ~ObChecksumValidator() {}
   int init(
@@ -107,8 +103,7 @@ public:
     ObMySQLProxy &sql_proxy);
 
   int set_basic_info(
-    const share::ObFreezeInfo &freeze_info,
-    const int64_t expected_epoch);
+    const share::ObFreezeInfo &freeze_info);
   const compaction::ObTableCompactionInfo &get_table_compaction_info() const
   {
     return table_compaction_info_;
@@ -173,7 +168,11 @@ private:
     ObIArray<int64_t> &finish_table_ids);
   int finish_verify_fts_ckm(const int64_t table_id);
   static const int64_t PRINT_CROSS_CLUSTER_LOG_INVERVAL = 10 * 60 * 1000 * 1000; // 10 mins
+#ifdef _WIN32
+  static constexpr int64_t MAX_TABLET_CHECKSUM_WAIT_TIME_US = 129600000000LL;  // 36 hours
+#else
   static const int64_t MAX_TABLET_CHECKSUM_WAIT_TIME_US = 36 * 3600 * 1000 * 1000L;  // 36 hours
+#endif
   static const int64_t MAX_BATCH_INSERT_COUNT = 1500;
   static const int64_t DEFAULT_TABLET_CNT = 32;
   bool is_inited_;
@@ -183,7 +182,6 @@ private:
   bool cross_cluster_ckm_sync_finish_;
   volatile bool &stop_;
   uint64_t tenant_id_;
-  int64_t expected_epoch_;
   uint64_t table_id_;
   share::ObFreezeInfo freeze_info_;
   int64_t major_merge_start_us_;
@@ -206,7 +204,6 @@ private:
   ObArray<share::ObTabletLSPair> cur_tablet_ls_pair_array_;
   share::ObReplicaCkmArray replica_ckm_items_;
   compaction::ObTableCkmItems last_table_ckm_items_; // only cached last data table with index
-  share::ObCompactionLocalityCache  &ls_locality_cache_;
 };
 
 } // end namespace rootserver

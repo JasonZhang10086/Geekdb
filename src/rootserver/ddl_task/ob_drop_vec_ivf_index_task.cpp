@@ -462,6 +462,15 @@ int ObDropVecIVFIndexTask::drop_aux_index_table(const share::ObDDLTaskStatus &ne
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected ddl task type", K(ret), K(task_type_));
   }
+
+  // state machine processing: directly switch status if success, otherwise retry if failed
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(switch_status(new_status, true, ret))) {
+    LOG_WARN("switch status failed", K(ret), K(new_status), K(task_status_));
+  } else {
+    LOG_INFO("drop_aux_index_table success", K(ret), K(parent_task_id_), K(task_id_), K(*this));
+  }
+
   return ret;
 }
 
@@ -701,8 +710,14 @@ int ObDropVecIVFIndexTask::create_drop_index_task(
   } else if (OB_FAIL(guard.get_table_schema(tenant_id_, index_schema->get_data_table_id(), data_table_schema))) {
     LOG_WARN("fail to get data table schema", K(ret), K(index_schema->get_data_table_id()));
   } else if (OB_UNLIKELY(nullptr == database_schema || nullptr == data_table_schema)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected error, schema is nullptr", K(ret), KP(database_schema), KP(data_table_schema));
+    if (OB_ISNULL(data_table_schema) && drop_index_arg_.is_hidden_) {
+      task_id = -1;
+      LOG_INFO("hidden data_table maybe removed when offline ddl is failed, skip drop",
+        K(ret), K(index_tid), K(index_name));
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected error, schema is nullptr", K(ret), KP(database_schema), KP(data_table_schema));
+    }
   } else if (is_domain_index && OB_FAIL(drop_index_sql.assign(drop_index_arg_.ddl_stmt_str_))) {
     LOG_WARN("assign user drop index sql failed", K(ret));
   } else {
@@ -721,6 +736,7 @@ int ObDropVecIVFIndexTask::create_drop_index_task(
     arg.ddl_stmt_str_        = drop_index_sql.string();
     arg.is_add_to_scheduler_ = true;
     arg.task_id_             = task_id_;
+    arg.is_hidden_           = drop_index_arg_.is_hidden_;
     if (OB_FAIL(ObDDLUtil::get_ddl_rpc_timeout(
             index_schema->get_all_part_num() + data_table_schema->get_all_part_num(), ddl_rpc_timeout_us))) {
       LOG_WARN("fail to get ddl rpc timeout", K(ret));

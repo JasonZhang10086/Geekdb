@@ -16,6 +16,7 @@
 
 #include "ob_tsi_utils.h"
 #include "lib/utility/utility.h"
+#include "lib/utility/ob_platform_utils.h"  // ffsl() on Windows
 
 namespace oceanbase
 {
@@ -78,7 +79,7 @@ int64_t alloc_itid()
     for (i = 0; i < 1024; i++) {
       uint64_t slot = ATOMIC_LOAD(&itid_slots[i]);
       if ((pos = ffsl(~slot)) > 0) {
-        if (ATOMIC_BCAS(&itid_slots[i], slot, slot | (1UL << (pos - 1)))) {
+        if (ATOMIC_BCAS(&itid_slots[i], slot, slot | (1ULL << (pos - 1)))) {
           idx = 64 * i + pos - 1;
           break;
         } else {
@@ -117,7 +118,7 @@ void free_itid(int64_t itid)
 {
   while (true) {
     uint64_t slot = ATOMIC_LOAD(&itid_slots[itid/64]);
-    if (ATOMIC_BCAS(&itid_slots[itid/64], slot, slot & ~(1UL << itid%64))) {
+    if (ATOMIC_BCAS(&itid_slots[itid/64], slot, slot & ~(1ULL << itid%64))) {
       break;
     }
   }
@@ -135,7 +136,9 @@ int64_t detect_max_itid()
   for (int i = 1023; i >= 0; i--) {
     uint64_t slot = ATOMIC_LOAD(&itid_slots[i]);
     if (slot != 0) {
-      int pos = __builtin_clzl(slot);
+      // Use __builtin_clzll: slot is uint64_t, and `unsigned long` is only
+      // 32-bit on Windows LLP64 which would make __builtin_clzl truncate.
+      int pos = __builtin_clzll(slot);
       idx = 64 * i + (64 - pos - 1);
       break;
     }

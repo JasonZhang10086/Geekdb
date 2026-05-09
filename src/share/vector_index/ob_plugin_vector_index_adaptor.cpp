@@ -21,10 +21,15 @@
 #include "share/vector_index/ob_vector_index_util.h"
 #include "sql/das/ob_das_dml_vec_iter.h"
 #include "lib/roaringbitmap/ob_rb_memory_mgr.h"
-#include "share/ls/ob_ls_operator.h"
 #include "share/vector_index/ob_plugin_vector_index_utils.h"
 #include "share/allocator/ob_tenant_vector_allocator.h"
 #include "lib/vector/ob_vector_util.h"
+#include "share/schema/ob_multi_version_schema_service.h"
+#include "share/schema/ob_schema_getter_guard.h"
+#include "share/tablet/ob_tablet_to_ls_operator.h"
+#include "share/ob_server_struct.h"
+#include "share/ob_share_util.h"
+#include "common/ob_timeout_ctx.h"
 
 namespace oceanbase
 {
@@ -75,10 +80,10 @@ OB_DEF_SERIALIZE_SIZE(ObVectorIndexParam)
 {
   int64_t len = 0;
   int ret = OB_SUCCESS;
-  LST_DO_CODE(OB_UNIS_ADD_LEN, 
-              type_, 
+  LST_DO_CODE(OB_UNIS_ADD_LEN,
+              type_,
               lib_,
-              dist_algorithm_, 
+              dist_algorithm_,
               dim_,
               m_,
               ef_construction_,
@@ -103,13 +108,13 @@ OB_DEF_SERIALIZE_SIZE(ObVectorIndexParam)
 OB_DEF_SERIALIZE(ObVectorIndexParam)
 {
   int ret = OB_SUCCESS;
-  LST_DO_CODE(OB_UNIS_ENCODE, 
-              type_, 
+  LST_DO_CODE(OB_UNIS_ENCODE,
+              type_,
               lib_,
               dist_algorithm_,
               dim_,
-              m_, 
-              ef_construction_, 
+              m_,
+              ef_construction_,
               ef_search_,
               extra_info_max_size_,
               extra_info_actual_size_,
@@ -142,9 +147,9 @@ OB_DEF_DESERIALIZE(ObVectorIndexParam)
               type_,
               lib_,
               dist_algorithm_,
-              dim_, 
+              dim_,
               m_,
-              ef_construction_, 
+              ef_construction_,
               ef_search_,
               extra_info_max_size_,
               extra_info_actual_size_,
@@ -196,6 +201,8 @@ int ObVectorQueryAdaptorResultContext::init_bitmaps()
   if (OB_ISNULL(tmp_allocator_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("ctx allocator invalid.", K(ret));
+  } else if (OB_NOT_NULL(bitmaps_)) {
+    // bitmap has already been initialized
   } else {
     ObVectorIndexRoaringBitMap *bitmaps = nullptr;
     if (OB_ISNULL(bitmaps = static_cast<ObVectorIndexRoaringBitMap*>
@@ -203,6 +210,8 @@ int ObVectorQueryAdaptorResultContext::init_bitmaps()
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("failed to create vbitmap msg", K(ret));
     } else {
+      bitmaps->insert_bitmap_ = nullptr;
+      bitmaps->delete_bitmap_ = nullptr;
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPC"));
       ROARING_TRY_CATCH(bitmaps->insert_bitmap_ = roaring::api::roaring64_bitmap_create());
       if (OB_SUCC(ret) && OB_ISNULL(bitmaps->insert_bitmap_)) {
@@ -219,7 +228,25 @@ int ObVectorQueryAdaptorResultContext::init_bitmaps()
         bitmaps->delete_bitmap_ = nullptr;
       }
     }
-    bitmaps_ = bitmaps;
+    if (OB_FAIL(ret)) {
+      if (OB_NOT_NULL(bitmaps)) {
+        if (OB_NOT_NULL(bitmaps->insert_bitmap_)) {
+          lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPA"));
+          roaring::api::roaring64_bitmap_free(bitmaps->insert_bitmap_);
+          bitmaps->insert_bitmap_ = nullptr;
+        }
+        if (OB_NOT_NULL(bitmaps->delete_bitmap_)) {
+          lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPB"));
+          roaring::api::roaring64_bitmap_free(bitmaps->delete_bitmap_);
+          bitmaps->delete_bitmap_ = nullptr;
+        }
+        tmp_allocator_->free(bitmaps);
+        bitmaps = nullptr;
+      }
+      bitmaps_ = nullptr;
+    } else {
+      bitmaps_ = bitmaps;
+    }
   }
   return ret;
 }
@@ -417,7 +444,7 @@ int try_free_memdata_resource(ObVectorIndexRecordType type,
 ObPluginVectorIndexAdaptor::ObPluginVectorIndexAdaptor(common::ObIAllocator *allocator,
                                                        lib::MemoryContext &entity,
                                                        uint64_t tenant_id)
-  : create_type_(CreateTypeMax), type_(VIAT_MAX), 
+  : create_type_(CreateTypeMax), type_(VIAT_MAX),
     algo_data_(nullptr), incr_data_(nullptr), snap_data_(nullptr), vbitmap_data_(nullptr), tenant_id_(tenant_id),
     snapshot_tablet_id_(ObTabletID(ObTabletID::INVALID_TABLET_ID)),
     inc_tablet_id_(ObTabletID(ObTabletID::INVALID_TABLET_ID)),
@@ -493,7 +520,7 @@ int ObPluginVectorIndexAdaptor::init_mem(ObVectorIndexMemData *&table_info)
   } else if (OB_FALSE_IT(table_info = new(table_buff) ObVectorIndexMemData())) {
   } else if (OB_ISNULL(table_info->mem_ctx_ = OB_NEWx(ObVsagMemContext, get_allocator(), all_vsag_use_mem_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to create mem_ctx msg", K(ret)); 
+    LOG_WARN("failed to create mem_ctx msg", K(ret));
   } else {
     table_info->scn_.set_min();
     table_info->inc_ref();
@@ -696,10 +723,16 @@ int ObPluginVectorIndexAdaptor::fill_vector_index_info(ObVectorIndexInfo &info)
     // partial adapter without index configuration
   } else if (OB_FAIL(get_hnsw_param(param))) {
     LOG_WARN("get hnsw param failed.", K(ret));
-  } else if (OB_FAIL(databuff_printf(info.statistics_,
-                 sizeof(info.statistics_), pos,
-                 "param=%s;", to_cstring(*param)))) {
-    LOG_WARN("failed to fill statistics", K(ret), K(this));
+  } else {
+    ObCStringHelper helper;
+    if (OB_FAIL(databuff_printf(info.statistics_,
+                   sizeof(info.statistics_), pos,
+                   "param=%s;", helper.convert(*param)))) {
+      LOG_WARN("failed to fill statistics", K(ret), K(this));
+    }
+  }
+  if (OB_FAIL(ret)) {
+    // do nothing
   } else if (OB_FAIL(databuff_printf(info.statistics_,
                       sizeof(info.statistics_), pos,
                       "snap_index_type=%d;", int(get_snap_index_type())))) {
@@ -712,26 +745,32 @@ int ObPluginVectorIndexAdaptor::fill_vector_index_info(ObVectorIndexInfo &info)
   } else if (OB_FAIL(databuff_printf(info.statistics_,
              sizeof(info.statistics_), pos, "idle_cnt=%ld;", idle_cnt_))) {
     LOG_WARN("failed to fill statistics", K(ret), K(this));
-  } else if (!index_identity_.empty() && OB_FAIL(databuff_printf(
-             info.statistics_, sizeof(info.statistics_), pos,
-             "index=%s;", to_cstring(index_identity_)))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));
+  } else if (!index_identity_.empty()) {
+    ObCStringHelper helper;
+    if (OB_FAIL(databuff_printf(
+               info.statistics_, sizeof(info.statistics_), pos,
+               "index=%s;", helper.convert(index_identity_)))) {
+      LOG_WARN("failed to fill statistic", K(ret), K(this));
+    }
+  }
+  if (OB_FAIL(ret)) {
+    // do nothing
   } else if (nullptr != incr_data_ && OB_FAIL(databuff_printf(
              info.statistics_, sizeof(info.statistics_), pos,
              "incr_data.scn=%lu;", incr_data_->scn_.get_val_for_inner_table_field()))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));          
+    LOG_WARN("failed to fill statistic", K(ret), K(this));
   } else if (nullptr != vbitmap_data_ && OB_FAIL(databuff_printf(
              info.statistics_, sizeof(info.statistics_), pos,
              "vbitmap_data.scn=%lu;", vbitmap_data_->scn_.get_val_for_inner_table_field()))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));          
+    LOG_WARN("failed to fill statistic", K(ret), K(this));
   } else if (nullptr != snap_data_ && OB_FAIL(databuff_printf(
              info.statistics_, sizeof(info.statistics_), pos,
              "snap_data.scn=%lu;", snap_data_->scn_.get_val_for_inner_table_field()))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));          
+    LOG_WARN("failed to fill statistic", K(ret), K(this));
   } else if (nullptr != all_vsag_use_mem_ && OB_FAIL(databuff_printf(
              info.statistics_, sizeof(info.statistics_), pos,
              "all_index_mem_used=%lu;", ATOMIC_LOAD(all_vsag_use_mem_)))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));      
+    LOG_WARN("failed to fill statistic", K(ret), K(this));
   } else {
     ObRbMemMgr *mem_mgr = nullptr;
     uint64_t tenant_id = MTL_ID();
@@ -741,9 +780,9 @@ int ObPluginVectorIndexAdaptor::fill_vector_index_info(ObVectorIndexInfo &info)
     } else if (OB_FAIL(databuff_printf(
                info.statistics_, sizeof(info.statistics_), pos,
                "all_index_bitmap_used=%lu;", mem_mgr->get_vec_idx_used()))) {
-      LOG_WARN("failed to fill statistic", K(ret), K(this));      
+      LOG_WARN("failed to fill statistic", K(ret), K(this));
     }
-  } 
+  }
   pos = 0;
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(databuff_printf(info.sync_info_, sizeof(info.sync_info_), pos,
@@ -798,13 +837,13 @@ int ObPluginVectorIndexAdaptor::init_mem_data(ObVectorIndexRecordType type, ObVe
         build_type = build_type == VIAT_HNSW_SQ || build_type == VIAT_HNSW_BQ ? VIAT_HGRAPH : build_type;
         lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
         lib::ObLightBacktraceGuard light_backtrace_guard(false);
-        if (OB_FAIL(obvectorutil::create_index(incr_data_->index_, 
-                                                      build_type,  
-                                                      DATATYPE_FLOAT32, 
-                                                      VEC_INDEX_ALGTH[param->dist_algorithm_], 
-                                                      param->dim_, 
-                                                      param->m_, 
-                                                      param->ef_construction_, 
+        if (OB_FAIL(obvectorutil::create_index(incr_data_->index_,
+                                                      build_type,
+                                                      DATATYPE_FLOAT32,
+                                                      VEC_INDEX_ALGTH[param->dist_algorithm_],
+                                                      param->dim_,
+                                                      param->m_,
+                                                      param->ef_construction_,
                                                       param->ef_search_,
                                                       incr_data_->mem_ctx_,
                                                       param->extra_info_actual_size_,
@@ -894,11 +933,11 @@ int ObPluginVectorIndexAdaptor::init_mem_data(ObVectorIndexRecordType type, ObVe
           }
         } else if (OB_FAIL(obvectorutil::create_index(snap_data_->index_,
                                                build_type,
-                                               DATATYPE_FLOAT32, 
-                                               VEC_INDEX_ALGTH[param->dist_algorithm_], 
-                                               param->dim_, 
-                                               build_metric, 
-                                               param->ef_construction_, 
+                                               DATATYPE_FLOAT32,
+                                               VEC_INDEX_ALGTH[param->dist_algorithm_],
+                                               param->dim_,
+                                               build_metric,
+                                               param->ef_construction_,
                                                param->ef_search_,
                                                snap_data_->mem_ctx_,
                                                param->extra_info_actual_size_,
@@ -955,11 +994,11 @@ int ObPluginVectorIndexAdaptor::init_snap_data_without_lock(ObVectorIndexAlgorit
         }
       } else if (OB_FAIL(obvectorutil::create_index(snap_data_->index_,
                                              build_type,
-                                             DATATYPE_FLOAT32, 
-                                             VEC_INDEX_ALGTH[param->dist_algorithm_], 
-                                             param->dim_, 
-                                             build_metric, 
-                                             param->ef_construction_, 
+                                             DATATYPE_FLOAT32,
+                                             VEC_INDEX_ALGTH[param->dist_algorithm_],
+                                             param->dim_,
+                                             build_metric,
+                                             param->ef_construction_,
                                              param->ef_search_,
                                              snap_data_->mem_ctx_,
                                              param->extra_info_actual_size_,
@@ -1007,7 +1046,7 @@ int ObPluginVectorIndexAdaptor::init_hnswsq_mem_data()
     }
     if (OB_FAIL(ret)) {
       free_hnswsq_array_data(snap_data_, get_allocator());
-    } 
+    }
   }
 
   return ret;
@@ -1081,17 +1120,17 @@ int ObPluginVectorIndexAdaptor::check_tablet_valid(ObVectorIndexRecordType type)
   return ret;
 }
 
-int ObPluginVectorIndexAdaptor::get_current_scn(share::SCN &current_scn) 
+int ObPluginVectorIndexAdaptor::get_current_scn(share::SCN &current_scn)
 {
   int ret = OB_SUCCESS;
   uint64_t tenant_id = MTL_ID();
   transaction::ObTransService *txs = MTL(transaction::ObTransService *);
-  
+
   current_scn.set_invalid();
   int64_t start_us = ObTimeUtility::fast_current_time();
   const transaction::MonotonicTs stc = transaction::MonotonicTs(start_us);
   transaction::MonotonicTs rts(0);
-  
+
   if (OB_ISNULL(txs)) {
     ret = OB_ERR_SYS;
     LOG_WARN("trans service is null", KR(ret));
@@ -1133,7 +1172,9 @@ bool ObPluginVectorIndexAdaptor::is_sync_index()
 
 void ObPluginVectorIndexAdaptor::update_index_id_dml_scn(share::SCN &current_scn)
 {
-  incr_data_->last_dml_scn_.atomic_set(current_scn);
+  if (OB_NOT_NULL(incr_data_)) {
+    incr_data_->last_dml_scn_.inc_update(current_scn);
+  }
 }
 
 void ObPluginVectorIndexAdaptor::update_index_id_read_scn()
@@ -1147,6 +1188,22 @@ void ObPluginVectorIndexAdaptor::update_index_id_read_scn()
   } else {
     incr_data_->last_read_scn_.atomic_set(current_scn);
   }
+}
+
+int ObPluginVectorIndexAdaptor::init_vbitmap_scn_after_snapshot_build(const share::SCN &snapshot_scn)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(vbitmap_data_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("vbitmap data is null when init vbitmap scn", K(ret), K(snapshot_scn), KP(this));
+  } else if (!snapshot_scn.is_valid_and_not_min()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid snapshot scn when init vbitmap scn", K(ret), K(snapshot_scn), KP(this));
+  } else {
+    TCWLockGuard lock_guard(vbitmap_data_->mem_data_rwlock_);
+    vbitmap_data_->scn_ = snapshot_scn;
+  }
+  return ret;
 }
 
 
@@ -1300,7 +1357,6 @@ int ObPluginVectorIndexAdaptor::handle_insert_embedded_table_rows(blocksstable::
     }
     if (OB_SUCC(ret) && incr_vid_count > 0) {
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
-      TCWLockGuard lock_guard(incr_data_->mem_data_rwlock_);
       if (OB_FAIL(obvectorutil::add_index(incr_data_->index_,
                                               vectors,
                                               incr_vids,
@@ -1308,13 +1364,12 @@ int ObPluginVectorIndexAdaptor::handle_insert_embedded_table_rows(blocksstable::
                                               extra_info_buf_ptr,
                                               incr_vid_count))) {
         LOG_WARN("failed to add index.", K(ret), K(dim), K(row_count));
-      } else {
-        incr_data_->set_vid_bound(vid_bound);
       }
     }
     if (OB_SUCC(ret)) {
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPH"));
       TCWLockGuard lock_guard(incr_data_->bitmap_rwlock_);
+      incr_data_->set_vid_bound(vid_bound);
       for (int64_t i = 0; OB_SUCC(ret) && i < incr_vid_count; i++) {
         ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(incr_data_->bitmap_->insert_bitmap_, incr_vids[i]));
       }
@@ -1513,7 +1568,7 @@ int ObPluginVectorIndexAdaptor::insert_rows(blocksstable::ObDatumRow *rows,
       ObDatum &vid_datum = rows[i].storage_datums_[vid_idx];
       ObDatum &op_datum = rows[i].storage_datums_[type_idx];
       ObDatum &vector_datum = rows[i].storage_datums_[vector_idx];
-      
+
       if (FALSE_IT(vid = vid_datum.get_int())) {
       } else if (FALSE_IT(op_str = op_datum.get_string())) {
       } else if (op_str.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_DELETE[0]) {
@@ -1581,7 +1636,6 @@ int ObPluginVectorIndexAdaptor::insert_rows(blocksstable::ObDatumRow *rows,
     if (OB_SUCC(ret) && incr_vid_count > 0) {
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
       lib::ObLightBacktraceGuard light_backtrace_guard(false);
-      TCWLockGuard lock_guard(incr_data_->mem_data_rwlock_);
       if (is_sparse_vector_index_type()) {
         if (OB_FAIL(obvectorutil::add_index(incr_data_->index_,
                                               lens,
@@ -1592,25 +1646,22 @@ int ObPluginVectorIndexAdaptor::insert_rows(blocksstable::ObDatumRow *rows,
                                               extra_info_buf_ptr
                                               ))) {
           LOG_WARN("failed to add sparse index.", K(ret), K(dim), K(row_count));
-        } else {
-          incr_data_->set_vid_bound(vid_bound);
         }
       } else {
         if (OB_FAIL(obvectorutil::add_index(incr_data_->index_,
-                                              vectors, 
-                                              incr_vids,  
-                                              dim, 
+                                              vectors,
+                                              incr_vids,
+                                              dim,
                                               extra_info_buf_ptr,
                                               incr_vid_count))) {
           LOG_WARN("failed to add index.", K(ret), K(dim), K(row_count));
-        } else {
-          incr_data_->set_vid_bound(vid_bound);
         }
       }
-    } 
+    }
     if (OB_SUCC(ret)) {
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPH"));
       TCWLockGuard lock_guard(incr_data_->bitmap_rwlock_);
+      incr_data_->set_vid_bound(vid_bound);
       for (int64_t i = 0; OB_SUCC(ret) && i < incr_vid_count; i++) {
         ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(incr_data_->bitmap_->insert_bitmap_, incr_vids[i]));
       }
@@ -1628,7 +1679,7 @@ int ObPluginVectorIndexAdaptor::insert_rows(blocksstable::ObDatumRow *rows,
 }
 
 int ObPluginVectorIndexAdaptor::add_extra_valid_vid(
-    ObVectorQueryAdaptorResultContext *ctx, 
+    ObVectorQueryAdaptorResultContext *ctx,
     int64_t vid)
 {
   INIT_SUCC(ret);
@@ -1645,7 +1696,7 @@ int ObPluginVectorIndexAdaptor::add_extra_valid_vid(
 }
 
 int ObPluginVectorIndexAdaptor::add_extra_valid_vid_without_malloc_guard(
-    ObVectorQueryAdaptorResultContext *ctx, 
+    ObVectorQueryAdaptorResultContext *ctx,
     int64_t vid)
 {
   INIT_SUCC(ret);
@@ -1756,8 +1807,8 @@ int ObPluginVectorIndexAdaptor::parse_sparse_vector(char *data, int num, uint32_
 *  There cannot be null pointers in vectors;
 *  The number of floats in vectors must be equal to num * dim;
 
-*  If you want to verify the above content in the add_snap_index interface, you need to traverse vectors and vids. 
-   In the scenario where a large amount of data is written, there will be a lot of unnecessary performance consumption, 
+*  If you want to verify the above content in the add_snap_index interface, you need to traverse vectors and vids.
+   In the scenario where a large amount of data is written, there will be a lot of unnecessary performance consumption,
    so the caller needs to ensure this.
 **************************************************************************/
 int ObPluginVectorIndexAdaptor::add_snap_index(float *vectors, int64_t *vids, ObVecExtraInfoObj *extra_objs, int64_t extra_column_count, int num, uint32_t *sparse_byte_lens /* nullptr */)
@@ -1826,12 +1877,12 @@ int ObPluginVectorIndexAdaptor::add_snap_index(float *vectors, int64_t *vids, Ob
         LOG_WARN("get invalid data.", K(ret));
       } else {
         char *extra_info_buf = nullptr;
-        if (OB_NOT_NULL(extra_objs) && extra_column_count > 0 && param->extra_info_actual_size_ > 0 && 
+        if (OB_NOT_NULL(extra_objs) && extra_column_count > 0 && param->extra_info_actual_size_ > 0 &&
             OB_FAIL(ObVecExtraInfo::extra_infos_to_buf(tmp_allocator, extra_objs, extra_column_count,
                                                        param->extra_info_actual_size_, num, extra_info_buf))) {
           LOG_WARN("failed to encode extra info.", K(ret), K(param->extra_info_actual_size_));
         } else {
-          if (snap_data_->has_build_sq_) { 
+          if (snap_data_->has_build_sq_) {
             // directly write into index
             lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
             lib::ObLightBacktraceGuard light_backtrace_guard(false);
@@ -1865,20 +1916,20 @@ int ObPluginVectorIndexAdaptor::add_snap_index(float *vectors, int64_t *vids, Ob
                 }
               }
               LOG_INFO("HgraphIndex add into cache array success", K(ret), K(dim), K(num), K(vids[0]), K(vids[num - 1]), KPC(snap_data_->vid_array_));
-      
+
               // second: construct hnsw+sq index
               ObVecIdxVidArray *vids_array = snap_data_->vid_array_;
-              if (OB_SUCC(ret) && OB_NOT_NULL(vids_array) 
-                  && vids_array->count() > VEC_INDEX_HNSWSQ_BUILD_COUNT_THRESHOLD 
+              if (OB_SUCC(ret) && OB_NOT_NULL(vids_array)
+                  && vids_array->count() > VEC_INDEX_HNSWSQ_BUILD_COUNT_THRESHOLD
                   && OB_ISNULL(snap_data_->index_)) {
                 if (OB_FAIL(build_hnswsq_index(param))) {
                   LOG_WARN("failed to build hnsw sq index.", K(ret), K(dim));
                 }
               }
-            } else { 
-              /* In a multithreading scenario, it is possible for threads a and b to simultaneously acquire a lock_guard. 
-                 If thread a acquires the lock_guard and creates an index (i.e., snap_data_->index_ != null), 
-                 then when thread b waits for thread a to release the lock_guard, it will find that snap_data_->index_ != null. 
+            } else {
+              /* In a multithreading scenario, it is possible for threads a and b to simultaneously acquire a lock_guard.
+                 If thread a acquires the lock_guard and creates an index (i.e., snap_data_->index_ != null),
+                 then when thread b waits for thread a to release the lock_guard, it will find that snap_data_->index_ != null.
                  At this point, thread a should call add_index to write the data; otherwise, the data will be lost. */
               lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
               lib::ObLightBacktraceGuard light_backtrace_guard(false);
@@ -1920,11 +1971,11 @@ int ObPluginVectorIndexAdaptor::build_hnswsq_index(ObVectorIndexParam *param)
       if (OB_FAIL(ret)) {
       }else if (OB_FAIL(obvectorutil::create_index(snap_data_->index_,
                                              param->type_,
-                                             DATATYPE_FLOAT32, 
-                                             VEC_INDEX_ALGTH[param->dist_algorithm_], 
-                                             param->dim_, 
-                                             param->m_, 
-                                             param->ef_construction_, 
+                                             DATATYPE_FLOAT32,
+                                             VEC_INDEX_ALGTH[param->dist_algorithm_],
+                                             param->dim_,
+                                             param->m_,
+                                             param->ef_construction_,
                                              param->ef_search_,
                                              snap_data_->mem_ctx_,
                                              param->extra_info_actual_size_,
@@ -1935,7 +1986,7 @@ int ObPluginVectorIndexAdaptor::build_hnswsq_index(ObVectorIndexParam *param)
       } else if (OB_FAIL(obvectorutil::build_index(snap_data_->index_,
                                                    vec_array->get_data(),
                                                    vid_array->get_data(),
-                                                   param->dim_, 
+                                                   param->dim_,
                                                    vid_array->count(),
                                                    extra_info_buf->ptr()))) {
         LOG_WARN("failed to build vsag index.", K(ret), K(snap_data_->index_), KPC(param));
@@ -2015,7 +2066,7 @@ int ObPluginVectorIndexAdaptor::set_snapshot_key_prefix(uint64_t tablet_id, uint
         snapshot_key_prefix_.reset();
       }
       snapshot_key_prefix_.assign(key_prefix_str, pos);
-    } 
+    }
   }
   return ret;
 }
@@ -2088,6 +2139,36 @@ int ObPluginVectorIndexAdaptor::copy_meta_info(ObPluginVectorIndexAdaptor &other
   return ret;
 }
 
+int ObPluginVectorIndexAdaptor::inherit_index_id_watermarks_from(ObPluginVectorIndexAdaptor &other)
+{
+  int ret = OB_SUCCESS;
+  ObVectorIndexMemData *old_incr_data = other.get_incr_data();
+  SCN old_last_dml_scn;
+  SCN old_last_read_scn;
+
+  if (OB_ISNULL(old_incr_data) || OB_ISNULL(incr_data_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid adapter memdata when inheriting index id watermarks",
+             K(ret), KP(this), KP(&other), KP(incr_data_), KP(old_incr_data));
+  } else {
+    {
+      TCRLockGuard old_incr_lock_guard(old_incr_data->mem_data_rwlock_);
+      old_last_dml_scn = old_incr_data->last_dml_scn_;
+      old_last_read_scn = old_incr_data->last_read_scn_;
+    }
+    {
+      TCWLockGuard new_incr_lock_guard(incr_data_->mem_data_rwlock_);
+      if (old_last_dml_scn.is_valid() && old_last_dml_scn > incr_data_->last_dml_scn_) {
+        incr_data_->last_dml_scn_.inc_update(old_last_dml_scn);
+      }
+      if (old_last_read_scn.is_valid() && old_last_read_scn > incr_data_->last_read_scn_) {
+        incr_data_->last_read_scn_.atomic_set(old_last_read_scn);
+      }
+    }
+  }
+  return ret;
+}
+
 int ObPluginVectorIndexAdaptor::check_snap_hnswsq_index()
 {
   INIT_SUCC(ret);
@@ -2118,11 +2199,11 @@ int ObPluginVectorIndexAdaptor::check_snap_hnswsq_index()
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(obvectorutil::create_index(snap_data_->index_,
                                              build_type,
-                                             DATATYPE_FLOAT32, 
-                                             VEC_INDEX_ALGTH[param->dist_algorithm_], 
-                                             param->dim_, 
-                                             build_metric, 
-                                             param->ef_construction_, 
+                                             DATATYPE_FLOAT32,
+                                             VEC_INDEX_ALGTH[param->dist_algorithm_],
+                                             param->dim_,
+                                             build_metric,
+                                             param->ef_construction_,
                                              param->ef_search_,
                                              snap_data_->mem_ctx_,
                                              param->extra_info_actual_size_,
@@ -2133,7 +2214,7 @@ int ObPluginVectorIndexAdaptor::check_snap_hnswsq_index()
       } else if (OB_FAIL(obvectorutil::add_index(snap_data_->index_,
                                                  vec_array->get_data(),
                                                  vid_array->get_data(),
-                                                 param->dim_, 
+                                                 param->dim_,
                                                  extra_info_buf->ptr(),
                                                  vid_array->count()))) {
         LOG_WARN("failed to add vsag index.", K(ret), K(snap_data_->index_), KPC(param));
@@ -2166,7 +2247,7 @@ int ObPluginVectorIndexAdaptor::check_snap_hnswsq_index()
 }
 
 // Query Processor first
-int ObPluginVectorIndexAdaptor::check_delta_buffer_table_readnext_status(ObVectorQueryAdaptorResultContext *ctx, 
+int ObPluginVectorIndexAdaptor::check_delta_buffer_table_readnext_status(ObVectorQueryAdaptorResultContext *ctx,
                                                                          common::ObNewRowIterator *row_iter,
                                                                          SCN query_scn)
 {
@@ -2212,7 +2293,7 @@ int ObPluginVectorIndexAdaptor::check_delta_buffer_table_readnext_status(ObVecto
         } else if (op.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_DELETE[0]) {
           ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_remove(ctx->bitmaps_->insert_bitmap_, vid));
           ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ctx->bitmaps_->delete_bitmap_, vid));
-          
+
         } else {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get invalid op.", K(ret), K(op));
@@ -2228,16 +2309,15 @@ int ObPluginVectorIndexAdaptor::check_delta_buffer_table_readnext_status(ObVecto
       }
     }
 
-#ifndef NDEBUG      
+#ifndef NDEBUG
     output_bitmap(ctx->bitmaps_->insert_bitmap_);
     output_bitmap(ctx->bitmaps_->delete_bitmap_);
 #endif
-    
+
     if (OB_SUCC(ret)) {
       ctx->status_ = PVQ_LACK_SCN;
     }
   }
-
   return ret;
 }
 
@@ -2265,7 +2345,7 @@ int ObPluginVectorIndexAdaptor::write_into_delta_mem(ObVectorQueryAdaptorResultC
         int64_t extra_info_actual_size = 0;
         if (OB_FAIL(get_extra_info_actual_size(extra_info_actual_size))) {
           LOG_WARN("failed to get extra info actual size.", K(ret));
-        } else if (extra_info_actual_size > 0 && 
+        } else if (extra_info_actual_size > 0 &&
                    OB_FAIL(ObVecExtraInfo::extra_infos_to_buf(tmp_allocator, extra_objs, extra_column_count,
                                                               extra_info_actual_size, count, extra_info_buf))) {
           LOG_WARN("failed to encode extra info.", K(ret), K(extra_info_actual_size));
@@ -2301,9 +2381,9 @@ int ObPluginVectorIndexAdaptor::write_into_delta_mem(ObVectorQueryAdaptorResultC
         for (int64_t i = 0; OB_SUCC(ret) && i < count; i++) {
           ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(incr_data_->bitmap_->insert_bitmap_, vids[i]));
         }
-      }
-      if (OB_SUCC(ret)) {
-        incr_data_->set_vid_bound(vid_bound);
+        if (OB_SUCC(ret)) {
+          incr_data_->set_vid_bound(vid_bound);
+        }
       }
       LOG_TRACE("write into delta mem.", K(ret), K(ctx->get_dim()), K(count));
     }
@@ -2339,7 +2419,7 @@ int ObPluginVectorIndexAdaptor::complete_delta_buffer_table_data(ObVectorQueryAd
     if (OB_ISNULL(extra_info_objs = static_cast<ObVecExtraInfoObj *>(tmp_allocator.alloc(sizeof(ObVecExtraInfoObj) * ctx->get_extra_column_count() * ctx->get_vec_cnt())))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("failed to alloc new mem.", K(ret));
-    } 
+    }
   }
   uint32_t sparse_total_length = 0;
   if (OB_FAIL(ret)) {
@@ -2453,17 +2533,20 @@ int ObPluginVectorIndexAdaptor::complete_delta_buffer_table_data(ObVectorQueryAd
 }
 
 // Query Processor second
-int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status(ObVectorQueryAdaptorResultContext *ctx, 
+int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status(ObVectorQueryAdaptorResultContext *ctx,
                                                                      common::ObNewRowIterator *row_iter,
-                                                                     SCN query_scn)
+                                                                     SCN query_scn,
+                                                                     bool is_async_mode,
+                                                                     ObLSID ls_id)
 {
+  LOG_INFO("check_index_id_table_readnext_status");
   INIT_SUCC(ret);
   blocksstable::ObDatumRow *datum_row = nullptr;
   int64_t read_num = 0;
   SCN read_scn = SCN::min_scn();
   ObArray<uint64_t> i_vids;
   ObTableScanIterator *table_scan_iter = static_cast<ObTableScanIterator *>(row_iter);
-  bool is_skip_4th_index = is_pruned_read_index_id();
+  bool is_skip_4th_index = !is_async_mode && is_pruned_read_index_id();
   // TODO First determine if waiting for PVQ_WAIT is needed
   if (OB_ISNULL(ctx) || OB_ISNULL(table_scan_iter)) {
     ret = OB_ERR_UNEXPECTED;
@@ -2478,6 +2561,12 @@ int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status(ObVectorQue
 
   if (OB_FAIL(ret)) {
   } else if (is_skip_4th_index) {
+    if (ctx->vec_data_.count_ > 0) {
+      ctx->status_ = PVQ_COM_DATA;
+    }
+  } else if (is_async_mode) {
+    // Async mode: branch early, no read_scn parsing at all
+    ret = check_index_id_table_readnext_status_async(ctx, row_iter, query_scn, ls_id);
   } else if (OB_FAIL(table_scan_iter->get_next_row(datum_row))) {
     if (ret == OB_ITER_END) {
       ret = OB_SUCCESS;
@@ -2500,30 +2589,224 @@ int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status(ObVectorQue
 
   if (OB_FAIL(ret)) {
   } else if (is_skip_4th_index) {
-    if (ctx->vec_data_.count_ > 0) {
-      ctx->status_ = PVQ_COM_DATA;
-    }
-  } else if (check_if_complete_index(read_scn) && 
-             OB_FAIL(complete_index_mem_data(read_scn, row_iter, datum_row, i_vids))) {
-    LOG_WARN("failed to check comple index mem data.", K(ret), K(read_scn), K(vbitmap_data_->scn_));
-  } else if (OB_ISNULL(ctx->bitmaps_) || OB_ISNULL(ctx->bitmaps_->insert_bitmap_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("failed to get ctx bit map.", K(ret));
-  } else {
-    bool need_check_if_complete_delta = is_hybrid_index() ? is_sync_index() : true;
-    if (need_check_if_complete_delta && check_if_complete_delta(ctx->bitmaps_->insert_bitmap_, i_vids.count())) {
-      if (OB_FAIL(prepare_delta_mem_data(ctx->bitmaps_->insert_bitmap_, i_vids, ctx))) {
-        LOG_WARN("failed to complete.", K(ret));
-      } else if (ctx->vec_data_.count_ > 0) {
-        ctx->status_ = PVQ_COM_DATA;
+    // already handled above
+  } else if (!is_async_mode) {
+    // Original logic: non-async mode (sync mode or non-heap table: no incremental path)
+    if (check_if_complete_index(read_scn) &&
+        OB_FAIL(complete_index_mem_data(read_scn, row_iter, datum_row, i_vids))) {
+      LOG_WARN("failed to check comple index mem data.", K(ret), K(read_scn), K(vbitmap_data_->scn_));
+    } else if (OB_ISNULL(ctx->bitmaps_) || OB_ISNULL(ctx->bitmaps_->insert_bitmap_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("failed to get ctx bit map.", K(ret));
+    } else {
+      bool need_check_if_complete_delta = is_hybrid_index() ? is_sync_index() : true;
+      if (need_check_if_complete_delta && check_if_complete_delta(ctx->bitmaps_->insert_bitmap_, i_vids.count())) {
+        if (OB_FAIL(prepare_delta_mem_data(ctx->bitmaps_->insert_bitmap_, i_vids, ctx))) {
+          LOG_WARN("failed to complete.", K(ret));
+        } else if (ctx->vec_data_.count_ > 0) {
+          ctx->status_ = PVQ_COM_DATA;
+        }
       }
     }
   }
-  
-  if (OB_SUCC(ret) && check_if_complete_index(read_scn) && !is_skip_4th_index) {
+
+  // Async path handles update_index_id_read_scn internally
+  if (OB_SUCC(ret) && !is_async_mode && check_if_complete_index(read_scn) && !is_skip_4th_index) {
     update_index_id_read_scn();
   }
 
+  return ret;
+}
+
+int ObPluginVectorIndexAdaptor::check_index_id_table_readnext_status_async(
+    ObVectorQueryAdaptorResultContext *ctx,
+    common::ObNewRowIterator *row_iter,
+    SCN query_scn,
+    ObLSID ls_id)
+{
+  // Async mode: no read_scn parsing. Use complete_index_mem_data_incremental for both
+  // full/incremental (no check_if_complete_index, no complete_index_mem_data)
+  INIT_SUCC(ret);
+  blocksstable::ObDatumRow *datum_row = nullptr;
+  ObArray<uint64_t> i_vids;
+  ObTableScanIterator *table_scan_iter = static_cast<ObTableScanIterator *>(row_iter);
+  SCN bitmap_scn = vbitmap_data_->scn_;
+
+  if (OB_ISNULL(ctx) || OB_ISNULL(table_scan_iter)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get ctx or row_iter invalid.", K(ret), KP(row_iter));
+  } else if (query_scn >= bitmap_scn) {
+    // No need for datum_row: complete_index_mem_data_incremental reads index_id_table directly
+    if ((OB_ISNULL(ctx->bitmaps_) || OB_ISNULL(ctx->bitmaps_->insert_bitmap_)) &&
+        OB_FAIL(ctx->init_bitmaps())) {
+      LOG_WARN("failed to init ctx bitmaps.", K(ret));
+    } else {
+      ret = complete_index_mem_data_incremental(ctx, ls_id, query_scn, i_vids);
+      if (OB_FAIL(ret)) {
+        LOG_WARN("failed to complete index mem data incrementally", K(ret), K(vbitmap_data_->scn_));
+      } else {
+        update_index_id_read_scn();
+      }
+      if (OB_SUCC(ret)) {
+        // In async mode, completeness should not depend on snapshot rb_flag.
+        // Manual refresh expects current query to see all refresh-visible rows.
+        if (OB_NOT_NULL(ctx->bitmaps_) && OB_NOT_NULL(ctx->bitmaps_->insert_bitmap_) &&
+            check_if_complete_delta(ctx->bitmaps_->insert_bitmap_, i_vids.count())) {
+          if (OB_FAIL(prepare_delta_mem_data(ctx->bitmaps_->insert_bitmap_, i_vids, ctx))) {
+            LOG_WARN("failed to prepare delta mem data for async recovery.", K(ret));
+          } else if (ctx->vec_data_.count_ > 0) {
+            ctx->status_ = PVQ_COM_DATA;
+          }
+        }
+        if (OB_SUCC(ret) && ctx->status_ != PVQ_COM_DATA) {
+          if (snap_data_->rb_flag_) {
+            ctx->status_ = PVQ_LACK_SCN;
+            ctx->flag_ = PVQP_SECOND;
+          } else {
+            ctx->status_ = PVQ_OK;
+            ctx->flag_ = PVQP_FIRST;
+          }
+        }
+      }
+    }
+  } else {
+    // query_scn < bitmap_scn: need datum_row for build_temp_bitmap_from_index_id_table
+    if (OB_FAIL(table_scan_iter->get_next_row(datum_row))) {
+      if (ret == OB_ITER_END) {
+        ret = OB_SUCCESS;
+        if (get_can_skip() == NOT_INITED) {
+          update_can_skip(SKIP);
+        }
+      } else {
+        LOG_WARN("failed to get new row.", K(ret));
+      }
+    } else if (!datum_row->is_valid()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get invalid new row.", K(ret));
+    } else if ((OB_ISNULL(ctx->bitmaps_) || OB_ISNULL(ctx->bitmaps_->insert_bitmap_)) &&
+               OB_FAIL(ctx->init_bitmaps())) {
+      LOG_WARN("failed to init ctx bitmaps.", K(ret));
+    } else if (OB_FAIL(build_temp_bitmap_from_index_id_table(ctx, row_iter, query_scn, datum_row))) {
+      LOG_WARN("failed to build temp bitmap from index_id_table.", K(ret), K(query_scn));
+    } else if (OB_ISNULL(ctx->bitmaps_) || OB_ISNULL(ctx->bitmaps_->insert_bitmap_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("failed to get ctx bit map.", K(ret));
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_NOT_NULL(ctx->bitmaps_) && OB_NOT_NULL(ctx->bitmaps_->insert_bitmap_) &&
+          check_if_complete_delta(ctx->bitmaps_->insert_bitmap_, i_vids.count())) {
+        if (OB_FAIL(prepare_delta_mem_data(ctx->bitmaps_->insert_bitmap_, i_vids, ctx))) {
+          LOG_WARN("failed to prepare delta mem data for async recovery.", K(ret));
+        } else if (ctx->vec_data_.count_ > 0) {
+          ctx->status_ = PVQ_COM_DATA;
+        }
+      }
+      if (OB_SUCC(ret) && ctx->status_ != PVQ_COM_DATA) {
+        if (snap_data_->rb_flag_) {
+          ctx->status_ = PVQ_LACK_SCN;
+          ctx->flag_ = PVQP_SECOND;
+        } else {
+          ctx->status_ = PVQ_OK;
+          ctx->flag_ = PVQP_FIRST;
+        }
+      }
+    }
+  }
+
+  return ret;
+}
+
+int ObPluginVectorIndexAdaptor::build_temp_bitmap_from_index_id_table(
+    ObVectorQueryAdaptorResultContext *ctx,
+    common::ObNewRowIterator *row_iter,
+    SCN query_scn,
+    blocksstable::ObDatumRow *first_row)
+{
+  INIT_SUCC(ret);
+  blocksstable::ObDatumRow *datum_row = nullptr;
+  ObTableScanIterator *table_scan_iter = static_cast<ObTableScanIterator *>(row_iter);
+  if (OB_ISNULL(ctx) || OB_ISNULL(table_scan_iter) || OB_ISNULL(first_row)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get ctx or row_iter or first_row invalid.", K(ret), KP(row_iter), KP(first_row));
+  } else if (OB_ISNULL(ctx->bitmaps_) || OB_ISNULL(ctx->bitmaps_->insert_bitmap_) ||
+             OB_ISNULL(ctx->bitmaps_->delete_bitmap_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to get ctx bitmaps.", K(ret));
+  } else {
+    lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapAsync"));
+    int64_t insert_cnt = 0;
+    int64_t delete_cnt = 0;
+
+    // First process the first_row which has already been read
+    if (first_row->get_column_count() < 3) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get first row column cnt invalid.", K(ret), K(first_row->get_column_count()));
+    } else {
+      int64_t vid = first_row->storage_datums_[1].get_int();
+      ObString op = first_row->storage_datums_[2].get_string();
+      if (op.length() != 1) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get invalid op length in first row.", K(ret), K(op));
+      } else if (op.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_INSERT[0]) {
+        if (!roaring::api::roaring64_bitmap_contains(ctx->bitmaps_->delete_bitmap_, vid)) {
+          ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ctx->bitmaps_->insert_bitmap_, vid));
+          insert_cnt++;
+        }
+      } else if (op.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_DELETE[0]) {
+        ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_remove(ctx->bitmaps_->insert_bitmap_, vid));
+        ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ctx->bitmaps_->delete_bitmap_, vid));
+        delete_cnt++;
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get invalid op in first row.", K(ret), K(op));
+      }
+    }
+
+    // Then process remaining rows
+    while (OB_SUCC(ret)) {
+      if (OB_FAIL(table_scan_iter->get_next_row(datum_row))) {
+        if (OB_ITER_END != ret) {
+          LOG_WARN("get next row failed.", K(ret));
+        }
+        break;
+      } else if (OB_ISNULL(datum_row) || !datum_row->is_valid()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get row invalid.", K(ret));
+      } else if (datum_row->get_column_count() < 3) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get row column cnt invalid.", K(ret), K(datum_row->get_column_count()));
+      } else {
+        int64_t vid = datum_row->storage_datums_[1].get_int();
+        ObString op = datum_row->storage_datums_[2].get_string();
+        if (op.length() != 1) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("get invalid op length.", K(ret), K(op));
+        } else if (op.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_INSERT[0]) {
+          if (!roaring::api::roaring64_bitmap_contains(ctx->bitmaps_->delete_bitmap_, vid)) {
+            ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ctx->bitmaps_->insert_bitmap_, vid));
+            insert_cnt++;
+          }
+        } else if (op.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_DELETE[0]) {
+          ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_remove(ctx->bitmaps_->insert_bitmap_, vid));
+          ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ctx->bitmaps_->delete_bitmap_, vid));
+          delete_cnt++;
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("get invalid op.", K(ret), K(op));
+        }
+      }
+    }
+
+    if (ret == OB_ITER_END) {
+      ret = OB_SUCCESS;
+    }
+
+#ifndef NDEBUG
+    output_bitmap(ctx->bitmaps_->insert_bitmap_);
+    output_bitmap(ctx->bitmaps_->delete_bitmap_);
+#endif
+
+  }
   return ret;
 }
 
@@ -2537,8 +2820,8 @@ int ObPluginVectorIndexAdaptor::check_snapshot_table_wait_status(ObVectorQueryAd
   return ret;
 }
 
-int ObPluginVectorIndexAdaptor::write_into_index_mem(int64_t dim, SCN read_scn, 
-                                                     ObArray<uint64_t> &i_vids, 
+int ObPluginVectorIndexAdaptor::write_into_index_mem(int64_t dim, SCN read_scn,
+                                                     ObArray<uint64_t> &i_vids,
                                                      ObArray<uint64_t> &d_vids)
 {
   INIT_SUCC(ret);
@@ -2558,7 +2841,7 @@ int ObPluginVectorIndexAdaptor::write_into_index_mem(int64_t dim, SCN read_scn,
       ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_remove(ibitmap, d_vids.at(i)));
     }
 
-#ifndef NDEBUG  
+#ifndef NDEBUG
     output_bitmap(ibitmap);
     output_bitmap(dbitmap);
 #endif
@@ -2578,11 +2861,11 @@ bool ObPluginVectorIndexAdaptor::check_if_complete_index(SCN read_scn)
     res = true;
     LOG_DEBUG("need complete index mem data.", K(read_scn), K(bitmap_scn));
   }
-  
+
   return res;
 }
 
-bool ObPluginVectorIndexAdaptor::check_if_complete_data(ObVectorQueryAdaptorResultContext *ctx) 
+bool ObPluginVectorIndexAdaptor::check_if_complete_data(ObVectorQueryAdaptorResultContext *ctx)
 {
   bool res = false;
 
@@ -2610,8 +2893,8 @@ bool ObPluginVectorIndexAdaptor::check_if_complete_data(ObVectorQueryAdaptorResu
   return res;
 }
 
-int ObPluginVectorIndexAdaptor::add_datum_row_into_array(blocksstable::ObDatumRow *datum_row, 
-                                                         ObArray<uint64_t> &i_vids, 
+int ObPluginVectorIndexAdaptor::add_datum_row_into_array(blocksstable::ObDatumRow *datum_row,
+                                                         ObArray<uint64_t> &i_vids,
                                                          ObArray<uint64_t> &d_vids)
 {
   INIT_SUCC(ret);
@@ -2630,7 +2913,7 @@ int ObPluginVectorIndexAdaptor::add_datum_row_into_array(blocksstable::ObDatumRo
   } else if (op.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_INSERT[0]) {
     if (OB_FAIL(i_vids.push_back(vid))) {
       LOG_WARN("failed to push back into vids.", K(ret), K(vid));
-    } 
+    }
   } else if (op.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_DELETE[0]) {
     if (OB_FAIL(d_vids.push_back(vid))) {
       LOG_WARN("failed to push back into vids.", K(ret), K(vid));
@@ -2642,7 +2925,7 @@ int ObPluginVectorIndexAdaptor::add_datum_row_into_array(blocksstable::ObDatumRo
   return ret;
 }
 
-int ObPluginVectorIndexAdaptor::complete_index_mem_data(SCN read_scn, 
+int ObPluginVectorIndexAdaptor::complete_index_mem_data(SCN read_scn,
                                                         common::ObNewRowIterator *row_iter,
                                                         blocksstable::ObDatumRow *last_row,
                                                         ObArray<uint64_t> &i_vids)
@@ -2684,6 +2967,270 @@ int ObPluginVectorIndexAdaptor::complete_index_mem_data(SCN read_scn,
     }
   }
 
+  return ret;
+}
+
+int ObPluginVectorIndexAdaptor::complete_index_mem_data_incremental(ObVectorQueryAdaptorResultContext *ctx,
+                                                                   ObLSID ls_id,
+                                                                   SCN query_scn,
+                                                                   ObArray<uint64_t> &i_vids)
+{
+  INIT_SUCC(ret);
+  ObArray<uint64_t> d_vids;
+  common::ObNewRowIterator *incr_iter = nullptr;
+  ObAccessService *tsc_service = MTL(ObAccessService *);
+  SCN last_row_scn = SCN::min_scn();
+  SCN base_scn = SCN::min_scn();
+  roaring::api::roaring64_bitmap_t *ibitmap = nullptr;
+  roaring::api::roaring64_bitmap_t *dbitmap = nullptr;
+
+  if (OB_ISNULL(allocator_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("allocator is null", K(ret));
+  } else if (OB_ISNULL(ctx) || OB_ISNULL(ctx->bitmaps_) ||
+             OB_ISNULL(ctx->bitmaps_->insert_bitmap_) || OB_ISNULL(ctx->bitmaps_->delete_bitmap_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ctx or ctx bitmaps invalid", K(ret));
+  } else if (OB_FAIL(try_init_mem_data(VIRT_BITMAP))) {
+    LOG_WARN("failed to init valid bitmap", K(ret), K(VIRT_BITMAP));
+  }
+
+  // Fix for async index: ensure table_id is initialized before reading index_id_table
+  // In async mode, adapter may be created by insert before scheduler sets table_id
+  if (OB_SUCC(ret) && vbitmap_table_id_ == common::OB_INVALID_ID) {
+    if (!vbitmap_tablet_id_.is_valid()) {
+      ret = common::OB_INVALID_ARGUMENT;
+      LOG_WARN("vbitmap_tablet_id is invalid", K(ret), K(vbitmap_tablet_id_));
+    } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+      ret = common::OB_ERR_UNEXPECTED;
+      LOG_WARN("sql_proxy is null", K(ret));
+    } else {
+      // Query __all_tablet_to_ls to get table_id by tablet_id
+      common::ObSEArray<common::ObTabletID, 1> tablet_ids;
+      common::ObSEArray<::oceanbase::share::ObTabletToLSInfo, 1> tablet_infos;
+      if (OB_FAIL(tablet_ids.push_back(vbitmap_tablet_id_))) {
+        LOG_WARN("fail to push back tablet_id", K(ret), K(vbitmap_tablet_id_));
+      } else if (OB_FAIL(::oceanbase::share::ObTabletToLSTableOperator::batch_get(
+                     *GCTX.sql_proxy_, tenant_id_, tablet_ids, tablet_infos))) {
+        if (common::OB_ITEM_NOT_MATCH == ret) {
+          // Tablet not in __all_tablet_to_ls yet (table just created), retry later
+          ret = common::OB_EAGAIN;
+          LOG_WARN("vbitmap tablet not found in __all_tablet_to_ls, may need retry",
+                   K(ret), K(vbitmap_tablet_id_), K(tenant_id_));
+        } else {
+          LOG_WARN("fail to get tablet info from __all_tablet_to_ls", K(ret), K(vbitmap_tablet_id_));
+        }
+      } else if (tablet_infos.count() != 1) {
+        ret = common::OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected tablet_infos count", K(ret), K(tablet_infos.count()));
+      } else {
+        const uint64_t vbitmap_table_id = tablet_infos.at(0).get_table_id();
+        schema::ObSchemaGetterGuard schema_guard;
+        const schema::ObSimpleTableSchemaV2 *table_schema = nullptr;
+        if (OB_FAIL(schema::ObMultiVersionSchemaService::get_instance().get_tenant_schema_guard(
+                tenant_id_, schema_guard))) {
+          LOG_WARN("fail to get schema guard", K(ret), K(tenant_id_));
+        } else if (OB_FAIL(schema_guard.get_simple_table_schema(tenant_id_, vbitmap_table_id, table_schema))) {
+          LOG_WARN("fail to get table schema", K(ret), K(tenant_id_), K(vbitmap_table_id));
+        } else if (OB_ISNULL(table_schema)) {
+          ret = common::OB_TABLE_NOT_EXIST;
+          LOG_WARN("table schema not found", K(ret), K(vbitmap_table_id));
+        } else {
+          const uint64_t data_table_id = table_schema->get_data_table_id();
+          LOG_INFO("sync table_id from schema for async index adapter",
+                   K(vbitmap_tablet_id_), K(vbitmap_table_id), K(data_table_id));
+          // Set table_ids from schema
+          if (OB_FAIL(set_table_id(VIRT_BITMAP, vbitmap_table_id))) {
+            LOG_WARN("fail to set vbitmap_table_id", K(ret), K(vbitmap_table_id));
+          } else if (OB_FAIL(set_table_id(VIRT_DATA, data_table_id))) {
+            LOG_WARN("fail to set data_table_id", K(ret), K(data_table_id));
+          }
+        }
+      }
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPK"));
+    const SCN last_dml_scn = OB_NOT_NULL(incr_data_) ? incr_data_->last_dml_scn_ : SCN();
+    // 1. Read lock and copy out vbitmap_data_ (scn + bitmap) first, use copy for all subsequent ops
+    {
+      TCRLockGuard rd_mem_lock_guard(vbitmap_data_->mem_data_rwlock_);
+      TCRLockGuard rd_bitmap_lock_guard(vbitmap_data_->bitmap_rwlock_);
+      base_scn = vbitmap_data_->scn_;
+      ROARING_TRY_CATCH(ibitmap = roaring::api::roaring64_bitmap_copy(vbitmap_data_->bitmap_->insert_bitmap_));
+      ROARING_TRY_CATCH(dbitmap = roaring::api::roaring64_bitmap_copy(vbitmap_data_->bitmap_->delete_bitmap_));
+    }
+
+    const bool can_skip_scan_4th_table =
+        base_scn.is_valid_and_not_min() &&
+        last_dml_scn.is_valid() &&
+        base_scn >= last_dml_scn;
+    if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
+      FLOG_INFO("check_scan", K(can_skip_scan_4th_table), K(base_scn), K(last_dml_scn), K(base_scn>=last_dml_scn));
+    }
+
+    if (OB_SUCC(ret) && can_skip_scan_4th_table) {
+      roaring::api::roaring64_bitmap_free(ctx->bitmaps_->insert_bitmap_);
+      roaring::api::roaring64_bitmap_free(ctx->bitmaps_->delete_bitmap_);
+      ctx->bitmaps_->insert_bitmap_ = ibitmap;
+      ctx->bitmaps_->delete_bitmap_ = dbitmap;
+      ibitmap = nullptr;
+      dbitmap = nullptr;
+    } else if (OB_NOT_NULL(ibitmap) && OB_NOT_NULL(dbitmap)) {
+      storage::ObTableScanParam scan_param;
+      schema::ObTableParam table_param(*allocator_);
+      // Read index_id_table using copied base_scn (thread-safe)
+      if (OB_FAIL(ObPluginVectorIndexUtils::read_local_tablet(ls_id,
+                                                              this,
+                                                              query_scn,
+                                                              INDEX_TYPE_VEC_INDEX_ID_LOCAL,
+                                                              *allocator_,
+                                                              *allocator_,
+                                                              scan_param,
+                                                              table_param,
+                                                              incr_iter,
+                                                              nullptr,
+                                                              false,
+                                                              false,
+                                                              &base_scn))) {
+        LOG_WARN("failed to read index_id table incrementally", K(ret), K(ls_id), K(base_scn));
+      } else {
+        ObTableScanIterator *table_scan_iter = static_cast<ObTableScanIterator *>(incr_iter);
+        while (OB_SUCC(ret)) {
+          blocksstable::ObDatumRow *datum_row = nullptr;
+          if (OB_FAIL(table_scan_iter->get_next_row(datum_row))) {
+            if (OB_ITER_END != ret) {
+              LOG_WARN("get next row failed.", K(ret));
+            }
+          } else {
+            // Only process rows up to query snapshot (index_id_table PK SCN).
+            uint64_t row_scn_val = datum_row->storage_datums_[0].get_uint64();
+            SCN row_scn;
+            if (OB_FAIL(row_scn.convert_for_inner_table_field(row_scn_val))) {
+              LOG_WARN("failed to convert row scn", K(ret), K(row_scn_val));
+            } else if (row_scn > query_scn) {
+              // Skip rows newer than query snapshot.
+            } else if (OB_FAIL(add_datum_row_into_array(datum_row, i_vids, d_vids))) {
+              LOG_WARN("failed to add vid into array.", K(ret), KP(datum_row));
+            } else if (row_scn > last_row_scn) {
+              // Track max SCN from merged rows for next incremental progress.
+              last_row_scn = row_scn;
+            }
+          }
+        }
+
+        if (ret == OB_ITER_END) {
+          ret = OB_SUCCESS;
+        }
+
+        if (OB_FAIL(ret)) {
+        } else if (!last_row_scn.is_valid_and_not_min() || last_row_scn <= base_scn) {
+          // No rows read or nothing to merge
+        } else {
+          // 2. Apply incremental to copies (no lock)
+          for (int64_t i = 0; OB_SUCC(ret) && i < i_vids.count(); i++) {
+            ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ibitmap, i_vids[i]));
+          }
+          for (int64_t i = 0; OB_SUCC(ret) && i < d_vids.count(); i++) {
+            ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(dbitmap, d_vids[i]));
+          }
+          for (int64_t i = 0; OB_SUCC(ret) && i < d_vids.count(); i++) {
+            ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_remove(ibitmap, d_vids.at(i)));
+          }
+          if (OB_SUCC(ret)) {
+            // 3. Update ctx with our copies (transfer ownership, no free needed)
+            roaring::api::roaring64_bitmap_free(ctx->bitmaps_->insert_bitmap_);
+            roaring::api::roaring64_bitmap_free(ctx->bitmaps_->delete_bitmap_);
+            ctx->bitmaps_->insert_bitmap_ = ibitmap;
+            ctx->bitmaps_->delete_bitmap_ = dbitmap;
+            ibitmap = nullptr;
+            dbitmap = nullptr;
+            // 4. Lock and copy back to vbitmap_data_
+            if (last_row_scn > vbitmap_data_->scn_){
+              update_index_id_dml_scn(last_row_scn);
+              TCWLockGuard lock_guard(vbitmap_data_->mem_data_rwlock_);
+              TCWLockGuard wr_vbit_bitmap_lock_guard(vbitmap_data_->bitmap_rwlock_);
+              if (last_row_scn > vbitmap_data_->scn_){
+                ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_or_inplace(vbitmap_data_->bitmap_->insert_bitmap_, ctx->bitmaps_->insert_bitmap_));
+                ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_or_inplace(vbitmap_data_->bitmap_->delete_bitmap_, ctx->bitmaps_->delete_bitmap_));
+                vbitmap_data_->scn_ = last_row_scn;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Centralized cleanup: free ibitmap/dbitmap if not transferred to ctx
+    if (OB_NOT_NULL(ibitmap)) {
+      roaring::api::roaring64_bitmap_free(ibitmap);
+    }
+    if (OB_NOT_NULL(dbitmap)) {
+      roaring::api::roaring64_bitmap_free(dbitmap);
+    }
+
+    if (OB_NOT_NULL(incr_iter) && OB_NOT_NULL(tsc_service)) {
+      int tmp_ret = tsc_service->revert_scan_iter(incr_iter);
+      if (tmp_ret != OB_SUCCESS) {
+        LOG_WARN("revert incr_iter failed", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+// ---------------------------------------------------------------------------
+// refresh_bitmap_background(): background bitmap refresh that mirrors the
+// query-time path (complete_index_mem_data_incremental) without a live query
+// context.  Uses SYS_LS, which is consistent with write_to_vsag_() in the
+// change_stream plugin.  The result bitmaps written into the synthetic ctx
+// are discarded; the valuable side-effect is the update to vbitmap_data_.
+// ---------------------------------------------------------------------------
+int ObPluginVectorIndexAdaptor::refresh_bitmap_background()
+{
+  INIT_SUCC(ret);
+  common::ObArenaAllocator tmp_alloc(common::ObMemAttr(tenant_id_, "BGBitmapRefresh"));
+  ObVectorQueryAdaptorResultContext ctx(tenant_id_, 0, &tmp_alloc, &tmp_alloc);
+  ObArray<uint64_t> i_vids;
+  share::SCN snapshot_scn;
+  const int64_t DEFAULT_TIMEOUT = GCONF.internal_sql_execute_timeout;
+  transaction::ObTransService *txs = MTL(transaction::ObTransService *);
+  ObTimeoutCtx timeout_ctx;
+  if (OB_ISNULL(txs)) {
+    ret = OB_ERR_SYS;
+    LOG_WARN("trans service is null", KR(ret));
+  } else if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(timeout_ctx, DEFAULT_TIMEOUT))) {
+    LOG_WARN("fail to set default timeout ctx", KR(ret));
+  } else if (OB_FAIL(txs->get_read_snapshot_version(timeout_ctx.get_abs_timeout(), snapshot_scn))) {
+    LOG_WARN("fail to get read snapshot version", KR(ret));
+  } else if (OB_FAIL(ctx.init_bitmaps())) {
+    LOG_WARN("failed to init bitmaps for background bitmap refresh", K(ret));
+  } else if (OB_FAIL(complete_index_mem_data_incremental(&ctx, share::SYS_LS, snapshot_scn, i_vids))) {
+    LOG_WARN("background bitmap refresh failed", K(ret), K(vbitmap_tablet_id_));
+  } else {
+    FLOG_INFO("refresh_bitmap_background", K(snapshot_scn), K(i_vids.count()));
+  }
+  return ret;
+}
+
+int ObPluginVectorIndexAdaptor::update_incr_bitmap(const int64_t *vids, int64_t count)
+{
+  INIT_SUCC(ret);
+  if (!is_mem_data_init_atomic(VIRT_INC) || OB_ISNULL(incr_data_->bitmap_) ||
+      OB_ISNULL(incr_data_->bitmap_->insert_bitmap_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("incr_data bitmap not initialized, skip update_incr_bitmap", K(ret), K(count));
+  } else if (OB_ISNULL(vids) || count <= 0) {
+    // nothing to do
+  } else {
+    lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPH"));
+    TCWLockGuard lock_guard(incr_data_->bitmap_rwlock_);
+    for (int64_t i = 0; OB_SUCC(ret) && i < count; i++) {
+      ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(
+          incr_data_->bitmap_->insert_bitmap_, static_cast<uint64_t>(vids[i])));
+    }
+  }
   return ret;
 }
 
@@ -2744,7 +3291,7 @@ int ObPluginVectorIndexAdaptor::prepare_delta_mem_data(roaring::api::roaring64_b
       int64_t dim = 0;
       int64_t extra_column_count = ctx->get_extra_column_count();
       ObObj *vids = nullptr;
-      int64_t vector_cnt = bitmap_cnt > ObVectorParamData::VI_PARAM_DATA_BATCH_SIZE ? 
+      int64_t vector_cnt = bitmap_cnt > ObVectorParamData::VI_PARAM_DATA_BATCH_SIZE ?
                            ObVectorParamData::VI_PARAM_DATA_BATCH_SIZE : bitmap_cnt;
       roaring::api::roaring64_iterator_t *bitmap_iter = nullptr;
       {
@@ -2850,23 +3397,19 @@ int ObPluginVectorIndexAdaptor::serialize(ObIAllocator *allocator, ObOStreamBuf:
   return ret;
 }
 
-int ObPluginVectorIndexAdaptor::renew_single_snap_index()
+int ObPluginVectorIndexAdaptor::renew_single_snap_index(bool mem_saving_mode)
 {
   int ret = OB_SUCCESS;
   ObVectorIndexAlgorithmType index_type = get_snap_index_type();
-  if (index_type == VIAT_HNSW_BQ) {
+  if (mem_saving_mode) {
     ObString invalid_prefix("renew");
     if (OB_ISNULL(snap_data_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected nullptr snap_data_", K(ret), KP(snap_data_));
     } else {
       TCWLockGuard lock_guard(snap_data_->mem_data_rwlock_);
-      if (OB_FAIL(try_free_memdata_resource(VIRT_SNAP, snap_data_, allocator_, tenant_id_))) {
+      if (OB_FAIL(renew_snapdata_in_lock())) {
         LOG_WARN("failed to free snap memdata", K(ret), KPC(this));
-      } else if (OB_FAIL(init_mem(snap_data_))) {
-        LOG_WARN("fail to init snap_data_ mem", K(ret));
-      } else if (OB_FAIL(try_init_snap_data(index_type))) {
-        LOG_WARN("failed to init snap data", K(ret), K(index_type));
       } else if (OB_FAIL(set_snapshot_key_prefix(invalid_prefix))) {
         LOG_WARN("fail to set snapshot key prefix", K(ret));
       }
@@ -2880,6 +3423,23 @@ int ObPluginVectorIndexAdaptor::renew_single_snap_index()
   return ret;
 }
 
+int ObPluginVectorIndexAdaptor::renew_snapdata_in_lock()
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(snap_data_)) {
+    // do nothing
+  } else if (OB_ISNULL(allocator_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("allocator is null", K(ret), KPC(snap_data_), K(allocator_));
+  } else {
+    ObVectorIndexAlgorithmType index_type = get_snap_index_type();
+    free_memdata_resource(VIRT_SNAP, snap_data_, allocator_, tenant_id_);
+    if (OB_FAIL(try_init_snap_data(index_type))) {
+      LOG_WARN("failed to init snap data", K(ret), K(index_type));
+    }
+  }
+  return ret;
+}
 
 int ObPluginVectorIndexAdaptor::merge_and_generate_bitmap(ObVectorQueryAdaptorResultContext *ctx,
                                                           ObHnswBitmapFilter &iFilter,
@@ -2905,7 +3465,7 @@ int ObPluginVectorIndexAdaptor::merge_and_generate_bitmap(ObVectorQueryAdaptorRe
     lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPQ"));
     ibitmap = ctx->bitmaps_->insert_bitmap_;
     dbitmap = ctx->bitmaps_->delete_bitmap_;
-#ifndef NDEBUG      
+#ifndef NDEBUG
     output_bitmap(ibitmap);
     output_bitmap(dbitmap);
     output_bitmap(vbitmap_data_->bitmap_->insert_bitmap_);
@@ -2922,7 +3482,7 @@ int ObPluginVectorIndexAdaptor::merge_and_generate_bitmap(ObVectorQueryAdaptorRe
     dFilter.set_roaring_bitmap(dbitmap);
     LOG_DEBUG("vbitmap is inited.", K(ret));
 
-#ifndef NDEBUG      
+#ifndef NDEBUG
     output_bitmap(ibitmap);
     output_bitmap(dbitmap);
 #endif
@@ -3053,7 +3613,7 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
   int64_t delta_res_cnt = 0;
   int64_t snap_res_cnt = 0;
   int64_t extra_info_actual_size = 0;
-  int64_t query_ef_search = query_cond->ef_search_ > ObPluginVectorIndexAdaptor::VSAG_MAX_EF_SEARCH ? 
+  int64_t query_ef_search = query_cond->ef_search_ > ObPluginVectorIndexAdaptor::VSAG_MAX_EF_SEARCH ?
                             ObPluginVectorIndexAdaptor::VSAG_MAX_EF_SEARCH : query_cond->ef_search_;
   float ob_sparse_drop_ratio_search = query_cond->ob_sparse_drop_ratio_search_;
   int64_t n_candidate = query_cond->n_candidate_;
@@ -3096,14 +3656,14 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
   } else if (is_mem_data_init_atomic(VIRT_INC) && OB_NOT_NULL(ctx->bitmaps_) &&
              OB_FAIL(print_bitmap(ctx->bitmaps_->delete_bitmap_))) {
     LOG_WARN("failed to print bitmap.", K(ret));
-  } else if (is_mem_data_init_atomic(VIRT_BITMAP) && OB_NOT_NULL(vbitmap_data_->bitmap_) && 
+  } else if (is_mem_data_init_atomic(VIRT_BITMAP) && OB_NOT_NULL(vbitmap_data_->bitmap_) &&
              OB_FAIL(print_bitmap(vbitmap_data_->bitmap_->insert_bitmap_))) {
     LOG_WARN("failed to print bitmap.", K(ret));
   } else if (is_mem_data_init_atomic(VIRT_BITMAP) && OB_NOT_NULL(vbitmap_data_->bitmap_) &&
              OB_FAIL(print_bitmap(vbitmap_data_->bitmap_->delete_bitmap_))) {
     LOG_WARN("failed to print bitmap.", K(ret));
   }
-#endif  
+#endif
 
   float valid_ratio = 1.0;
   if (OB_SUCC(ret) && ctx->is_prefilter_valid()) {
@@ -3120,7 +3680,7 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
       snap_valid_ratio = ctx->pre_filter_->get_valid_ratio(snap_cnt);
       valid_ratio = incr_valid_ratio < snap_valid_ratio ? incr_valid_ratio : snap_valid_ratio;
       valid_ratio = valid_ratio < 1.0f ? valid_ratio : 1.0f;
-      // ATTENTION!!!! 
+      // ATTENTION!!!!
       // valid_ratio is relative to VSAG version, after version 0.13.4 need to be reviewed to see if any modifications are required
       // get new_ratio from (1 - new_ratio) * 0.9 = 1 - (1 - old_ratio) * 0.7
       // TOREMOVE : remove this when vsag fix skip_ratio
@@ -3168,14 +3728,14 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
       LOG_WARN("knn search delta failed.", K(ret), K(dim));
     } else if (!is_sparse_vector_index_type() && !is_incr_search_with_iter_ctx && is_mem_data_init_atomic(VIRT_INC)) {
       if (OB_FAIL(obvectorutil::knn_search(get_incr_index(),
-                                         query_vector, 
+                                         query_vector,
                                          dim,
-                                         query_cond->query_limit_, 
-                                         delta_distances, 
-                                         delta_vids, 
+                                         query_cond->query_limit_,
+                                         delta_distances,
+                                         delta_vids,
                                          delta_extra_info_buf_ptr,
-                                         delta_res_cnt, 
-                                         query_ef_search, 
+                                         delta_res_cnt,
+                                         query_ef_search,
                                          &ifilter, //ibitmap,
                                          true,/*reverse_filter*/
                                          ifilter.is_range_filter(), // use_inner_id_filter
@@ -3251,7 +3811,7 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
       }
     }
   }
-  
+
   if (OB_SUCC(ret) && delta_res_cnt && query_cond->extra_column_count_ > 0) {
     if (OB_FAIL(delta_extra_info_ptr.init(ctx->tmp_allocator_, delta_extra_info_buf_ptr, extra_info_actual_size, delta_res_cnt))) {
       LOG_WARN("failed to init delta_extra_info_ptr.", K(ret));
@@ -3517,7 +4077,7 @@ int ObPluginVectorIndexAdaptor::query_next_result(ObVectorQueryAdaptorResultCont
     int64_t delta_res_cnt = 0;
     int64_t snap_res_cnt = 0;
     float valid_ratio = 1.0;
-    int64_t query_ef_search = query_cond->ef_search_ > ObPluginVectorIndexAdaptor::VSAG_MAX_EF_SEARCH ? 
+    int64_t query_ef_search = query_cond->ef_search_ > ObPluginVectorIndexAdaptor::VSAG_MAX_EF_SEARCH ?
                             ObPluginVectorIndexAdaptor::VSAG_MAX_EF_SEARCH : query_cond->ef_search_;
 
     int64_t incr_cnt = 0;
@@ -3665,15 +4225,15 @@ int ObPluginVectorIndexAdaptor::query_next_result(ObVectorQueryAdaptorResultCont
           LOG_WARN("failed to init merge_extra_info_ptr.", K(ret));
         }
       }
-      
+
       if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(ObPluginVectorIndexHelper::sort_merge_delta_and_snap_vids(delta_data, snap_data, 
-                                                                              query_cond->query_limit_, 
-                                                                              actual_res_cnt, 
+      } else if (OB_FAIL(ObPluginVectorIndexHelper::sort_merge_delta_and_snap_vids(delta_data, snap_data,
+                                                                              query_cond->query_limit_,
+                                                                              actual_res_cnt,
                                                                               merge_vids, merge_distance, merge_extra_info_ptr))) {
         LOG_WARN("failed to merge delta and snap vids.", K(ret));
-      } 
-      
+      }
+
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(vids_iter->init(actual_res_cnt, merge_vids, merge_distance, merge_extra_info_ptr, ctx->allocator_))) {
         LOG_WARN("iter init failed.", K(ret), K(actual_res_cnt), K(merge_vids), K(ctx->allocator_));
@@ -3732,7 +4292,7 @@ int ObPluginVectorIndexAdaptor::query_result(ObLSID &ls_id,
   } else { // need load data
     if (OB_ISNULL(query_cond->row_iter_) || OB_ISNULL(query_cond->scan_param_)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get snapshot table iter null.", K(ret), 
+      LOG_WARN("get snapshot table iter null.", K(ret),
         K(ctx->get_ls_leader()), KP(query_cond), KP(query_cond->row_iter_), KP(query_cond->scan_param_));
     } else {
       blocksstable::ObDatumRow *row = nullptr;
@@ -3751,14 +4311,24 @@ int ObPluginVectorIndexAdaptor::query_result(ObLSID &ls_id,
       {
         if (get_create_type() == CreateTypeComplete) {
           ctx->status_ = PVQ_REFRESH;
-          LOG_INFO("query result need refresh adapter, ls leader", 
+          LOG_INFO("query result need refresh adapter, ls leader",
               K(ret), K(ls_id), K(ctx->get_ls_leader()), K(snapshot_tablet_id_), K(get_snapshot_key_prefix()), K(row->storage_datums_[0].get_string()));
         } else if (OB_FAIL(deserialize_snap_data(query_cond, row))) {
-          LOG_WARN("failed to deserialize snap data", K(ret));
+          if (ret == OB_ERR_VSAG_RETURN_ERROR) {
+            // snapshot data may be transiently incomplete under concurrent DDL/DML;
+            // trigger refresh path and let upper layer retry with refreshed memdata.
+            ctx->status_ = PVQ_REFRESH;
+            ret = OB_SUCCESS;
+            LOG_INFO("deserialize snap data got vsag transient error, mark refresh",
+                K(ls_id), K(snapshot_tablet_id_), K(get_snapshot_key_prefix()),
+                K(row->storage_datums_[0].get_string()));
+          } else {
+            LOG_WARN("failed to deserialize snap data", K(ret));
+          }
         }
       }
     }
-    
+
     if (OB_FAIL(ret)) {
     } else if (PVQ_REFRESH == ctx->status_) { // skip
     } else if (query_cond->only_complete_data_) {
@@ -3769,7 +4339,7 @@ int ObPluginVectorIndexAdaptor::query_result(ObLSID &ls_id,
       close_snap_data_rb_flag();
     }
   }
-  
+
   int tmp_ret = OB_SUCCESS;
   if (PVQ_REFRESH == ctx->status_) {
   } else if ((tmp_ret = check_if_need_optimize(ctx)) != OB_SUCCESS) {
@@ -3830,7 +4400,7 @@ int ObPluginVectorIndexAdaptor::try_init_snap_data(ObVectorIndexAlgorithmType ac
       // actual create hnswsq index
       if (OB_FAIL(init_snap_data_without_lock())) {
         LOG_WARN("failed to init snap mem data", K(ret), K(type_));
-      }  
+      }
     } else if (actual_type == VIAT_HNSW || actual_type == VIAT_HGRAPH) {
       // actual create hnsw index
       if (OB_FAIL(init_snap_data_without_lock(actual_type))) {
@@ -3974,7 +4544,7 @@ int ObPluginVectorIndexAdaptor::set_adaptor_ctx_flag(ObVectorQueryAdaptorResultC
 
 // use init flag instead？
 bool ObPluginVectorIndexAdaptor::is_complete()
-{ 
+{
    bool is_vaild = is_inc_tablet_valid()
                   && is_vbitmap_tablet_valid()
                   && is_snap_tablet_valid()
@@ -3998,7 +4568,7 @@ static int ref_memdata(ObVectorIndexMemData *&dst_mem_data, ObVectorIndexMemData
   return ret;
 }
 
-int ObPluginVectorIndexAdaptor::merge_mem_data_(ObVectorIndexRecordType type, 
+int ObPluginVectorIndexAdaptor::merge_mem_data_(ObVectorIndexRecordType type,
                                                 ObPluginVectorIndexAdaptor *src_adapter,
                                                 ObVectorIndexMemData *&src_mem_data,
                                                 ObVectorIndexMemData *&dst_mem_data)
@@ -4067,6 +4637,9 @@ int ObPluginVectorIndexAdaptor::merge_parital_index_adapter(ObPluginVectorIndexA
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
       } else if (OB_FAIL(set_tablet_id(VIRT_DATA, partial_idx_adpt->get_data_tablet_id()))) {
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
+      } else if (partial_idx_adpt->get_data_table_id() != OB_INVALID_ID
+                 && OB_FAIL(set_table_id(VIRT_DATA, partial_idx_adpt->get_data_table_id()))) {
+        LOG_WARN("failed to set data table id while merge inc adapter", K(partial_idx_adpt), K(*this), KR(ret));
       } else if (!partial_idx_adpt->is_hybrid_index() && OB_FAIL(merge_mem_data_(VIRT_INC, partial_idx_adpt, partial_idx_adpt->incr_data_, incr_data_))){
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
       }
@@ -4080,6 +4653,9 @@ int ObPluginVectorIndexAdaptor::merge_parital_index_adapter(ObPluginVectorIndexA
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
       } else if (OB_FAIL(set_tablet_id(VIRT_DATA, partial_idx_adpt->get_data_tablet_id()))) {
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
+      } else if (partial_idx_adpt->get_data_table_id() != OB_INVALID_ID
+                 && OB_FAIL(set_table_id(VIRT_DATA, partial_idx_adpt->get_data_table_id()))) {
+        LOG_WARN("failed to set data table id while merge bitmap adapter", K(partial_idx_adpt), K(*this), KR(ret));
       } else if (OB_FAIL(merge_mem_data_(VIRT_BITMAP, partial_idx_adpt, partial_idx_adpt->vbitmap_data_, vbitmap_data_))){
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
       }
@@ -4093,6 +4669,9 @@ int ObPluginVectorIndexAdaptor::merge_parital_index_adapter(ObPluginVectorIndexA
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
       } else if (OB_FAIL(set_tablet_id(VIRT_DATA, partial_idx_adpt->get_data_tablet_id()))) {
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
+      } else if (partial_idx_adpt->get_data_table_id() != OB_INVALID_ID
+                 && OB_FAIL(set_table_id(VIRT_DATA, partial_idx_adpt->get_data_table_id()))) {
+        LOG_WARN("failed to set data table id while merge snapshot adapter", K(partial_idx_adpt), K(*this), KR(ret));
       } else if (OB_FAIL(merge_mem_data_(VIRT_SNAP, partial_idx_adpt, partial_idx_adpt->snap_data_, snap_data_))){
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
       }
@@ -4111,6 +4690,9 @@ int ObPluginVectorIndexAdaptor::merge_parital_index_adapter(ObPluginVectorIndexA
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
       } else if (OB_FAIL(set_tablet_id(VIRT_DATA, partial_idx_adpt->get_data_tablet_id()))) {
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
+      } else if (partial_idx_adpt->get_data_table_id() != OB_INVALID_ID
+                 && OB_FAIL(set_table_id(VIRT_DATA, partial_idx_adpt->get_data_table_id()))) {
+        LOG_WARN("failed to set data table id while merge embedded adapter", K(partial_idx_adpt), K(*this), KR(ret));
       } else if (partial_idx_adpt->is_hybrid_index() && OB_FAIL(merge_mem_data_(VIRT_INC, partial_idx_adpt, partial_idx_adpt->incr_data_, incr_data_))){
         LOG_WARN("partial vector index adapter not valid", K(partial_idx_adpt), K(*this), KR(ret));
       }
@@ -4125,7 +4707,7 @@ int ObPluginVectorIndexAdaptor::merge_parital_index_adapter(ObPluginVectorIndexA
     if (OB_SUCC(ret) && OB_NOT_NULL(partial_idx_adpt->all_vsag_use_mem_)) {
       all_vsag_use_mem_ = partial_idx_adpt->all_vsag_use_mem_;
     }
-  
+
     if (OB_SUCC(ret)
         && OB_ISNULL(algo_data_)
         && OB_NOT_NULL(partial_idx_adpt->algo_data_)) {
@@ -4184,7 +4766,7 @@ int ObPluginVectorIndexAdaptor::check_need_sync_to_follower_or_do_opt_task(bool 
     }
 
     int64_t current_bitmap_count = 0;
-    
+
     if (OB_NOT_NULL(get_vbitmap_dbitmap())) {
       TCRLockGuard rd_bitmap_lock_guard(vbitmap_data_->bitmap_rwlock_);
       current_bitmap_count += roaring64_bitmap_get_cardinality(get_vbitmap_dbitmap());
@@ -4269,7 +4851,7 @@ int ObPluginVectorIndexAdaptor::get_snap_vsag_mem_hold()
 int ObPluginVectorIndexAdaptor::get_vid_bound(ObVidBound &bound)
 {
   INIT_SUCC(ret);
-  // get incr and snap data bound 
+  // get incr and snap data bound
   int64_t min_vid = INT64_MAX;
   int64_t max_vid = 0;
   if (incr_data_->is_inited()) {
@@ -4322,7 +4904,7 @@ int ObPluginVectorIndexAdaptor::get_snap_index_row_cnt(int64_t &count)
     LOG_DEBUG("succ to get snap index row cnt", K(ret), K(count));
   }
   return ret;
-} 
+}
 
 void ObHnswBitmapFilter::reset()
 {
@@ -4601,18 +5183,18 @@ bool ObHnswBitmapFilter::is_subset(roaring::api::roaring64_bitmap_t *bitmap)
 void *ObVsagSearchAlloc::Allocate(uint64_t size)
 {
   void *ret_ptr = nullptr;
-  
+
   if (size != 0) {
     int64_t actual_size = MEM_PTR_HEAD_SIZE + size;
 
     void *ptr = alloc_.alloc(actual_size);
-    if (OB_NOT_NULL(ptr)) {    
+    if (OB_NOT_NULL(ptr)) {
       *(int64_t*)ptr = actual_size;
       ret_ptr = (char*)ptr + MEM_PTR_HEAD_SIZE;
     }
   }
 
-  return ret_ptr;  
+  return ret_ptr;
 }
 
 void *ObVsagSearchAlloc::Reallocate(void* p, uint64_t size)

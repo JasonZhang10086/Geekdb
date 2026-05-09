@@ -26,6 +26,31 @@
 #include "lib/thread/thread_pool.h"
 #include "lib/ash/ob_ash_bkgd_sess_inactive_guard.h"
 
+// Windows nanosleep implementation with improved precision
+#ifdef _WIN32
+#include <windows.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
+inline int nanosleep(const struct timespec *req, struct timespec *rem) {
+  if (!req) return -1;
+  DWORD ms = static_cast<DWORD>(req->tv_sec * 1000 + req->tv_nsec / 1000000);
+  if (ms == 0 && (req->tv_sec > 0 || req->tv_nsec > 0)) {
+    ms = 1;
+  }
+  static bool timer_set = false;
+  if (!timer_set) {
+    timeBeginPeriod(1);
+    timer_set = true;
+  }
+  Sleep(ms);
+  if (rem) {
+    rem->tv_sec = 0;
+    rem->tv_nsec = 0;
+  }
+  return 0;
+}
+#endif
+
 namespace oceanbase
 {
 namespace common
@@ -49,7 +74,6 @@ public:
   static int64_t getRealClock();
   static void msleep(const int64_t ms);
   static void usleep(const int64_t us);
-  static void try_advance_cur_ts(const int64_t cur_ts);
 
 private:
   int64_t get_us();
@@ -66,8 +90,11 @@ private:
 
 inline int64_t ObClockGenerator::getClock()
 {
+#ifdef OB_BUILD_EMBED_MODE
+  // No background ClockGenerator thread in embed mode: avoid sleep load;
+  return common::ObTimeUtility::current_time();
+#else
   int64_t ts = 0;
-
   if (OB_UNLIKELY(!clock_generator_.inited_)) {
     TRANS_LOG_RET(WARN, common::OB_NOT_INIT, "clock generator not inited");
     ts = clock_generator_.get_us();
@@ -76,6 +103,7 @@ inline int64_t ObClockGenerator::getClock()
   }
 
   return ts;
+#endif
 }
 
 inline int64_t ObClockGenerator::getRealClock()
@@ -102,19 +130,6 @@ inline void ObClockGenerator::usleep(const int64_t us)
     ObBKGDSessInActiveGuard inactive_guard;
     (void)nanosleep(&ts, nullptr);
   }
-}
-
-inline void ObClockGenerator::try_advance_cur_ts(const int64_t cur_ts)
-{
-  int64_t origin_cur_ts = OB_INVALID_TIMESTAMP;
-  do {
-    origin_cur_ts = ATOMIC_LOAD(&clock_generator_.cur_ts_);
-    if (origin_cur_ts < cur_ts) {
-      break;
-    } else {
-      TRANS_LOG_RET(WARN, common::OB_ERR_SYS, "timestamp rollback, need advance cur ts", K(origin_cur_ts), K(cur_ts));
-    }
-  } while (false == ATOMIC_BCAS(&clock_generator_.cur_ts_, origin_cur_ts, cur_ts));
 }
 
 OB_INLINE int64_t ObClockGenerator::get_us()

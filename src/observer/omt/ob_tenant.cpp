@@ -17,6 +17,12 @@
 #define USING_LOG_PREFIX SERVER_OMT
 #include "ob_tenant.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/resource.h>
+#endif
+
 #include "share/resource_manager/ob_resource_manager.h"
 #include "sql/engine/px/ob_px_target_mgr.h"
 #include "sql/dtl/ob_dtl_fc_server.h"
@@ -24,9 +30,6 @@
 #include "lib/worker.h"
 #include "storage/ob_file_system_router.h"
 #include "storage/ob_file_system_router.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/ob_disk_space_manager.h"
-#endif
 #include "share/rc/ob_tenant_module_init_ctx.h"
 #include "sql/engine/px/ob_px_worker.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
@@ -717,8 +720,7 @@ ObTenant::ObTenant(const int64_t id,
       ctx_(nullptr),
       st_metrics_(),
       sql_limiter_(),
-      worker_us_(0),
-      cpu_time_us_(0)
+      worker_us_(0)
 {
   token_usage_check_ts_ = ObTimeUtility::current_time();
 }
@@ -820,7 +822,7 @@ int ObTenant::construct_mtl_init_ctx(const ObTenantMeta &meta, share::ObTenantMo
     mtl_init_ctx_->palf_options_.disk_options_.log_disk_utilization_threshold_ = 80;
     mtl_init_ctx_->palf_options_.disk_options_.log_disk_utilization_limit_threshold_ = 95;
     mtl_init_ctx_->palf_options_.disk_options_.log_disk_throttling_percentage_ = 100;
-    mtl_init_ctx_->palf_options_.disk_options_.log_disk_throttling_maximum_duration_ = 2 * 60 * 60 * 1000 * 1000L;//2h
+    mtl_init_ctx_->palf_options_.disk_options_.log_disk_throttling_maximum_duration_ = 2LL * 60 * 60 * 1000 * 1000;//2h
     mtl_init_ctx_->palf_options_.disk_options_.log_writer_parallelism_ = 3;
     ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
     if (OB_UNLIKELY(!tenant_config.is_valid())) {
@@ -1075,7 +1077,7 @@ int ObTenant::try_wait()
   return ret;
 }
 
-void __attribute__((weak)) print_all_thread(const char* desc, uint64_t tenant_id)
+void OB_WEAK_SYMBOL print_all_thread(const char* desc, uint64_t tenant_id)
 {
   UNUSED(desc);
   UNUSED(tenant_id);
@@ -1648,6 +1650,7 @@ void ObTenant::regist_threads_to_cgroup()
   }
 
   if (OB_SUCC(thread_list_lock_.trylock())) {
+#ifndef _WIN32
     DLIST_FOREACH_REMOVESAFE(thread_list_node_, thread_list_)
     {
       Thread *thread = thread_list_node_->get_data();
@@ -1666,6 +1669,7 @@ void ObTenant::regist_threads_to_cgroup()
         }
       }
     }
+#endif
     LOG_INFO("regist threads to cgroup from thread list", K(ret), K(id_), K(thread_list_.get_size()));
     thread_list_lock_.unlock();
   }
@@ -1767,11 +1771,6 @@ void ObTenant::check_worker_count()
       LOG_INFO("worker thread began to shrink", K(id_), K(token));
     }
     IGNORE_RETURN workers_lock_.unlock();
-  }
-
-  if (GCONF._enable_new_sql_nio && GCONF._enable_tenant_sql_net_thread &&
-      (is_sys_tenant(id_) || is_user_tenant(id_))) {
-    GCTX.net_frame_->reload_tenant_sql_thread_config(id_);
   }
 }
 
@@ -1937,22 +1936,30 @@ void ObTenant::update_token_usage()
     token_usage_ = std::max(.0, 1.0 * (total_us - idle_us) / total_us);
     IGNORE_RETURN ATOMIC_FAA(&worker_us_, total_us - idle_us);
   }
+}
 
-  if (OB_NOT_NULL(GCTX.cgroup_ctrl_) && GCTX.cgroup_ctrl_->is_valid()) {
-    //do nothing
-  } else if (duration >= 1000 * 1000 && OB_SUCC(thread_list_lock_.trylock())) {  // every second
-    int64_t cpu_time_inc = 0;
-    DLIST_FOREACH_REMOVESAFE(thread_list_node_, thread_list_)
-    {
-      Thread *thread = thread_list_node_->get_data();
-      int64_t inc = 0;
-      if (OB_SUCC(thread->get_cpu_time_inc(inc))) {
-        cpu_time_inc += inc;
-      }
-    }
-    thread_list_lock_.unlock();
-    IGNORE_RETURN ATOMIC_FAA(&cpu_time_us_, cpu_time_inc);
+int64_t ObTenant::get_cpu_time() const
+{
+#ifdef _WIN32
+  FILETIME creation, exit, kernel, user;
+  if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user)) {
+    return 0;
   }
+  auto filetime_to_us = [](const FILETIME &ft) -> int64_t {
+    ULARGE_INTEGER u;
+    u.LowPart = ft.dwLowDateTime;
+    u.HighPart = ft.dwHighDateTime;
+    return static_cast<int64_t>(u.QuadPart / 10); // 100ns -> us
+  };
+  return filetime_to_us(user) + filetime_to_us(kernel);
+#else
+  struct rusage usage;
+  if (getrusage(RUSAGE_SELF, &usage) != 0) {
+    return 0;
+  }
+  return (int64_t)usage.ru_utime.tv_sec * 1000000LL + usage.ru_utime.tv_usec
+       + (int64_t)usage.ru_stime.tv_sec * 1000000LL + usage.ru_stime.tv_usec;
+#endif
 }
 
 void ObTenant::periodically_check()

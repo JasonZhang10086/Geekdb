@@ -29,7 +29,6 @@
 #include "lib/thread/ob_simple_thread_pool.h"
 #include "lib/task/ob_timer.h"
 #include "lib/container/ob_iarray.h"
-#include "share/ob_unit_table_operator.h"
 #include "share/schema/ob_schema_service.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 
@@ -131,7 +130,6 @@ public:
     uint64_t tenant_id, bool is_oracle_tenant, uint64_t job_id, const common::ObString &job_name);
   void free_job_key(ObDBMSSchedJobKey *&job_key);
 
-  int server_random_pick_from_zone_list(int64_t tenant_id, common::ObIArray<common::ObZone> &zone_list, ObAddr &server);
   int get_execute_addr(ObDBMSSchedJobInfo &job_info, common::ObAddr &execute_addr);
   void switch_to_leader();
   void switch_to_follower();
@@ -154,7 +152,11 @@ private:
   const static int DEFAULT_ZONE_SIZE = 4;
   const static int FILTER_ZONE_SIZE = 1;
   const static int DEFALUT_SERVER_SIZE = 16;
-  const static uint64_t PURGE_RUN_DETAIL_INTERVAL = 60 * 60 * 1000 * 1000L;//1h
+#ifdef _WIN32
+  static constexpr uint64_t PURGE_RUN_DETAIL_INTERVAL = 3600000000ULL; // 1h
+#else
+  const static uint64_t PURGE_RUN_DETAIL_INTERVAL = 60 * 60 * 1000 * 1000L; // 1h
+#endif
   const static int CHECK_JOB_LOST_THRESHOLD = 60 * 1000 * 1000;
 
   bool inited_;
@@ -168,7 +170,6 @@ private:
 
   common::ObAddr self_addr_;
   ObDBMSSchedTableOperator table_operator_;
-  ObUnitTableOperator unit_operator_;
 
   common::ObBlockAllocMgr block_alloc_;
   common::ObVSliceAlloc allocator_;

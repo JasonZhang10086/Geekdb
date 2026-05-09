@@ -76,7 +76,7 @@ TestMetaPointerMap::TestMetaPointerMap()
 void TestMetaPointerMap::SetUp()
 {
   lib::ObMemAttr attr(OB_SERVER_TENANT_ID, "TabletMap");
-  int ret = tablet_map_.init(1000L, attr, 15 * 1024L * 1024L * 1024L, 8 * 1024L * 1024L,
+  int ret = tablet_map_.init(1000L, attr, 15LL * 1024 * 1024 * 1024, 8LL * 1024 * 1024,
           common::OB_MALLOC_NORMAL_BLOCK_SIZE);
   ASSERT_EQ(common::OB_SUCCESS, ret);
 
@@ -105,7 +105,7 @@ void TestMetaPointerMap::FakeLs(ObLS &ls)
   ls.ls_meta_.tenant_id_ = 1;
   ls.ls_meta_.ls_id_.id_ = 1001;
   ls.ls_meta_.migration_status_ = ObMigrationStatus::OB_MIGRATION_STATUS_NONE;
-  ls.ls_meta_.restore_status_ = ObLSRestoreStatus::NONE;
+  ls.ls_meta_.restore_status_ = ObRestoreStatus::Status::NONE;
   ls.ls_meta_.rebuild_seq_ = 0;
   ls.ls_meta_.store_format_ = common::ObLSStoreType::OB_LS_STORE_NORMAL;
 }

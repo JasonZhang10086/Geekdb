@@ -17,6 +17,14 @@
 #ifndef OCEANBASE_LIB_OBLOG_OB_LOG_
 #define OCEANBASE_LIB_OBLOG_OB_LOG_
 
+#ifdef _WIN32
+// Windows defines ERROR macro (as 0), which conflicts with log level ERROR
+// Undefine it before including any headers that might use ERROR as a log level
+#ifdef ERROR
+#undef ERROR
+#endif
+#endif
+
 #ifdef __APPLE__
 // Define _DARWIN_C_SOURCE before including any system headers to enable BSD types (u_int, u_short, etc.)
 // This must be defined before including sys/types.h
@@ -32,28 +40,31 @@
 #include <stdarg.h>
 #include <time.h>
 #include <stdio.h>
+#ifndef _WIN32
 #include <strings.h>
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/uio.h>
+#endif
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <deque>
 #include <string>
 #include <pthread.h>
-#include <sys/time.h>
 #include <stdint.h>
 #include <cstring>
-#include <sys/uio.h>
 #ifdef __APPLE__
 #include <sys/mount.h> // For statfs on macOS
-#else
+#elif defined(__linux__)
 #include <sys/statfs.h>
 #endif
 #include <signal.h>
 
 #include "lib/ob_errno.h"
+#include "lib/ob_abort.h"
 #include "ob_log_print_kv.h"
 #include "lib/coro/co_var.h"
 
@@ -65,6 +76,25 @@
 #include "lib/signal/ob_signal_handlers.h"
 #include "common/ob_common_utility.h"
 #include "lib/oblog/ob_log_dba_event.h"
+
+// Undefine Windows min/max macros to avoid conflicts with std::min/std::max
+#ifdef _WIN32
+#ifdef max
+#undef max
+#endif
+#ifdef min
+#undef min
+#endif
+#ifdef ERROR
+#undef ERROR
+#endif
+#ifdef DELETE
+#undef DELETE
+#endif
+#ifdef ERROR_SEEK
+#undef ERROR_SEEK
+#endif
+#endif
 
 #define OB_LOG_MAX_PAR_MOD_SIZE 64
 #define OB_LOG_MAX_SUB_MOD_SIZE 64
@@ -80,10 +110,16 @@ namespace oceanbase
 namespace common
 {
 class ObVSliceAlloc;
-class ObBlockAllocMgr;
-class ObFIFOAllocator;
 class ObPLogItem;
 class ObLogCompressor;
+
+#ifdef _WIN32
+// Flag to indicate that main() has been entered and the logging system is safe to use.
+// Before main(), global constructors/destructors may trigger OB_LOG macros, but the
+// logging infrastructure (thread-local storage, file I/O, etc.) may not be ready.
+// This flag is zero-initialized (.bss) before any dynamic initialization runs.
+extern bool g_ob_log_main_entered;
+#endif
 
 extern void allow_next_syslog(int64_t count = 1);
 extern int logdata_vprintf(char *buf, const int64_t buf_len, int64_t &pos, const char *fmt, va_list args);
@@ -294,8 +330,8 @@ public:
   static const int32_t MAX_LOG_FILE_COUNT = 10 * 1024;
 
   static const int64_t MAX_LOG_HEAD_SIZE = 256;
+  static const int64_t BASE_LOG_SIZE = 4 * 1024; //4kb
   static const int64_t MAX_LOG_SIZE = 64 * 1024; //64kb
-  static const int64_t LOCAL_BUF_SIZE = 65 * 1024; //64kb
 
   static const int64_t GROUP_COMMIT_MAX_WAIT_US = 500*1000;//0.5s
   static const int64_t GROUP_COMMIT_MIN_ITEM_COUNT = 1;
@@ -410,7 +446,7 @@ public:
   int64_t get_wait_us(const int32_t level);
 
   //@brief thread buffer for printing log
-  TraceBuffer *get_trace_buffer();
+  TraceBuffer *&get_trace_buffer();
 
   //@brief set thread trace mode
   void set_trace_mode(bool trace_mode);
@@ -584,13 +620,21 @@ public:
   }
 
   //@brief Check whether the level to print.
+#if defined(_WIN32)
+  bool need_to_print(const int32_t level) { return (level <= get_log_level()); }
+#else
   bool __attribute__((weak, noinline, cold)) need_to_print(const int32_t level) { return (level <= get_log_level()); }
+#endif
   bool __attribute__((weak, noinline, cold)) need_to_print_dba(const int32_t level, bool force = false);
   //@brief Check whether the level of the par-module to print.
+#if defined(_WIN32)
+  bool need_to_print(const uint64_t par_mod_id, const int32_t level);
+  bool need_to_print(const uint64_t par_mod_id, const uint64_t sub_mod_id, const int32_t level);
+#else
   bool __attribute__((weak, noinline, cold)) need_to_print(const uint64_t par_mod_id, const int32_t level);
-  //@brief Check whether the level of the sub-module to print.
   bool __attribute__((weak, noinline, cold)) need_to_print(const uint64_t par_mod_id, const uint64_t sub_mod_id,
                             const int32_t level);
+#endif
 
   //@brief Set the log-file's name.
   //@param[in] filename The log-file's name.
@@ -766,7 +810,7 @@ private:
 
   int try_upgrade_log_item(ObPLogItem *&log_item, bool &upgrade_result);
 
-  void check_log_end(ObPLogItem &log_item, int64_t pos);
+  int check_log_end(ObPLogItem &log_item, int64_t pos);
 
   int backtrace_if_needed(ObPLogItem &log_item, const bool force);
   int check_tl_log_limiter(const int32_t level, const int errcode,
@@ -855,13 +899,10 @@ private:
   int64_t dropped_count_[MAX_TASK_LOG_TYPE + 1];//last one is force allow count
   int64_t written_count_[MAX_TASK_LOG_TYPE + 1];
   int64_t current_written_count_[MAX_TASK_LOG_TYPE + 1];
-  ObBlockAllocMgr* log_mem_limiter_;
-  ObVSliceAlloc* allocator_;
-  ObFIFOAllocator* error_allocator_;
+  ObVSliceAlloc *log_allocator_;
   ObLogCompressor* log_compressor_;
   // juse use it for test promise log print
   bool enable_log_limit_;
-  RLOCAL_STATIC(ByteBuf<LOCAL_BUF_SIZE>, local_buf_);
   struct {
     ProbeAction action_;
     char file_[128];
@@ -939,15 +980,17 @@ inline int8_t& ObThreadLogLevelUtils::get_level_()
   return level;
 }
 
-inline void ObLogger::check_log_end(ObPLogItem &log_item, int64_t pos)
+inline int ObLogger::check_log_end(ObPLogItem &log_item, int64_t pos)
 {
+  int ret = OB_SUCCESS;
   const int64_t buf_size = log_item.get_buf_size();
   if (buf_size > 0) {
-    if (pos < 0) {
-      pos = 0;
-    } else if (pos > buf_size - 2) {
+    DEBUG_ASSERT(pos >=0 && pos <= buf_size);
+    if (pos > buf_size - 2) {
       pos = buf_size - 2;
+      ret = OB_SIZE_OVERFLOW;
     }
+    // ret==OB_SIZE_OVERFLOW will be ignored
     char *data = log_item.get_buf();
     if (pos > 0 && data[pos - 1] != '\n') {
       data[pos++] = '\n';
@@ -955,6 +998,7 @@ inline void ObLogger::check_log_end(ObPLogItem &log_item, int64_t pos)
     data[pos] = '\0';
     log_item.set_data_len(pos);
   }
+  return ret;
 }
 
 template<typename Function>
@@ -967,6 +1011,18 @@ void ObLogger::log_it(const char *mod_name,
             const int errcode,
             Function &&log_data_func)
 {
+#ifdef _WIN32
+    // On Windows, the full logging system is not safe during static init/destroy
+    // (before main() enters or after main() returns). Fall back to stderr.
+    if (OB_UNLIKELY(!g_ob_log_main_entered)) {
+      if (OB_NOT_NULL(file) && OB_NOT_NULL(function)) {
+        static constexpr const char *const lvlstr[] = {"ERROR", "WARN", "INFO", "EDIAG", "WDIAG", "TRACE", "DEBUG"};
+        const char *lvl = (level >= 0 && level < (int)(sizeof(lvlstr)/sizeof(lvlstr[0]))) ? lvlstr[level] : "?";
+        fprintf(stderr, "[PRE-MAIN] %-5s %s:%d %s\n", lvl, file, line, function);
+      }
+      return;
+    }
+#endif
     int ret = OB_SUCCESS;
     if (OB_LIKELY(level <= OB_LOG_LEVEL_DEBUG)
         && OB_LIKELY(level >= OB_LOG_LEVEL_DBA_ERROR)
@@ -1045,13 +1101,21 @@ inline void ObLogger::log_message_va(const char *mod_name,
   }
 }
 
+#if defined(_WIN32)
+inline bool ObLogger::need_to_print(const uint64_t par_mod_id, const int32_t level)
+#else
 bool __attribute__((weak, noinline, cold)) ObLogger::need_to_print(const uint64_t par_mod_id, const int32_t level)
+#endif
 {
   return (level <= get_log_level(par_mod_id));
 }
 
+#if defined(_WIN32)
+inline bool ObLogger::need_to_print(const uint64_t par_mod_id, const uint64_t sub_mod_id, const int32_t level)
+#else
 bool __attribute__((weak, noinline, cold)) ObLogger::need_to_print(const uint64_t par_mod_id, const uint64_t sub_mod_id,
                                     const int32_t level)
+#endif
 {
   return (level <= get_log_level(par_mod_id, sub_mod_id));
 }
@@ -1201,6 +1265,7 @@ inline void ObLogger::do_log_message(const bool is_async,
   limited_left_log_size_ = 0;
   BASIC_TIME_GUARD(tg, "ObLog");
   int64_t start_ts = OB_TSC_TIMESTAMP.current_time();
+  ObPLogItem *log_item = NULL;
   if (is_queue_full()) {
     // do-nothing
   } else if (FD_TRACE_FILE != fd_type && OB_FAIL(check_tl_log_limiter(level, errcode, log_size,
@@ -1210,48 +1275,67 @@ inline void ObLogger::do_log_message(const bool is_async,
     inc_dropped_log_count(level);
   } else {
     ++curr_logging_seq_;
-    // format to local buf
-    ObPLogItem *log_item = new (local_buf_) ObPLogItem();
-    log_item->set_buf_size(MAX_LOG_SIZE);
-    log_item->set_log_level(level);
-    log_item->set_timestamp(start_ts);
-    log_item->set_tl_type(tl_type_);
-    log_item->set_force_allow(is_force_allows());
-    log_item->set_fd_type(fd_type);
-
-    char *buf = log_item->get_buf();
-    int64_t buf_len = log_item->get_buf_size();
-    int64_t pos = log_item->get_data_len();
-    if (with_head) {
-      if (OB_FAIL(log_head(start_ts, mod_name, dba_event, level, file, line, function, errcode,
-                           buf, buf_len, pos))) {
-        LOG_STDERR("log_header error ret = %d\n", ret);
+    const int64_t buf_len_array[] = {BASE_LOG_SIZE, MAX_LOG_SIZE};
+    for (int i = 0; OB_SUCC(ret) && i < ARRAYSIZEOF(buf_len_array); ++i) {
+      const int64_t buf_len = buf_len_array[i];
+      if (NULL != log_item ) {
+        free_log_item(log_item);
+        log_item = NULL;
       }
-    }
-    if (OB_SUCC(ret)) {
-      log_item->set_data_len(pos);
-      log_item->set_header_len(pos);
-      if (OB_FAIL(log_data_func(buf, buf_len, pos))) {
-      }
-      check_log_end(*log_item, pos);
-      if (OB_UNLIKELY(OB_SIZE_OVERFLOW == ret)) {
-        log_item->set_size_overflow();
-        ret = OB_SUCCESS;
-      }
-      if (OB_SUCC(ret)) {
-        if (OB_FAIL(backtrace_if_needed(*log_item, force_bt))) {
-          LOG_STDERR("backtrace_if_needed error ret = %d\n", ret);
-        }
-      }
-    }
-
-    if (OB_SUCC(ret) && !allow) {
-      int64_t pos = log_item->get_header_len();
-      if (OB_FAIL(logdata_print_info(log_item->get_buf(), log_item->get_buf_size(), pos,
-                                     limiter_info))) {
-        // do nothing
+      if (OB_FAIL(alloc_log_item(level, LOG_ITEM_SIZE + buf_len, log_item))) {
+        LOG_STDERR("alloc_log_item error, ret=%d\n", ret);
       } else {
-        check_log_end(*log_item, pos);
+        // format to local buf
+        log_item->set_buf_size(buf_len);
+        log_item->set_log_level(level);
+        log_item->set_timestamp(start_ts);
+        log_item->set_tl_type(tl_type_);
+        log_item->set_force_allow(is_force_allows());
+        log_item->set_fd_type(fd_type);
+        char *buf = log_item->get_buf();
+        int64_t pos = 0;
+        if (with_head && OB_FAIL(log_head(start_ts, mod_name, dba_event, level,
+              file, line, function, errcode, buf, buf_len, pos))) {
+          LOG_STDERR("log_header error ret = %d\n", ret);
+        } else {
+          log_item->set_data_len(pos);
+          log_item->set_header_len(pos);
+          if (allow) {
+            if (OB_FAIL(log_data_func(buf, buf_len, pos))) {
+              if (OB_SIZE_OVERFLOW == ret) {
+                if (buf_len != MAX_LOG_SIZE) {
+                  // do-nothing
+                } else {
+                  if (pos < buf_len - 2) {
+                    pos = buf_len - 2;
+                  }
+                  check_log_end(*log_item, pos);
+                }
+              } else {
+                LOG_STDERR("log data error ret = %d\n", ret);
+              }
+            } else if (OB_FAIL(check_log_end(*log_item, pos))) {
+              // do nothing
+            } else if (OB_FAIL(backtrace_if_needed(*log_item, force_bt))) {
+              if (OB_SIZE_OVERFLOW != ret) {
+                LOG_STDERR("backtrace_if_needed error ret = %d\n", ret);
+              }
+            }
+          } else {
+            int64_t pos = log_item->get_header_len();
+            if (OB_FAIL(logdata_print_info(buf, buf_len, pos, limiter_info))) {
+              // do nothing
+            } else if (OB_FAIL(check_log_end(*log_item, pos))) {
+              // do nothing
+            }
+          }
+        }
+        if (OB_SIZE_OVERFLOW == ret) {
+          log_item->set_size_overflow();
+          ret = OB_SUCCESS;
+        } else {
+          break;
+        }
       }
     }
     BASIC_TIME_GUARD_CLICK("FORMAT_END");
@@ -1259,52 +1343,33 @@ inline void ObLogger::do_log_message(const bool is_async,
 
     if (OB_SUCC(ret)) {
       limited_left_log_size_ = std::max(static_cast<int64_t>(0), log_item->get_data_len() - NORMAL_LOG_SIZE);
+      const bool is_async = is_async_log_used();
       if (is_async) {
-        // clone by data_size
-        ObPLogItem *new_log_item = nullptr;
-        if (OB_FAIL(alloc_log_item(level, LOG_ITEM_SIZE + log_item->get_data_len(), new_log_item))) {
-          LOG_STDERR("alloc_log_item error, ret=%d\n", ret);
+        const int32_t tl_type = log_item->get_tl_type();
+        if (OB_FAIL(append_log(*log_item))) {
+          LOG_STDERR("append_log error ret = %d\n", ret);
         } else {
-_Pragma("GCC diagnostic push")
-#ifdef __clang__
-_Pragma("GCC diagnostic ignored \"-Wdynamic-class-memaccess\"")
-#endif
-          MEMCPY((void *)new_log_item, (void *)log_item, LOG_ITEM_SIZE + log_item->get_data_len());
-_Pragma("GCC diagnostic pop")
-            // update buf_size
-          new_log_item->set_buf_size(log_item->get_data_len());
-          log_item = new_log_item;
-          BASIC_TIME_GUARD_CLICK("ALLOC_END");
-        }
-
-        if (OB_SUCC(ret)) {
-          const int32_t tl_type = log_item->get_tl_type();
-          if (OB_FAIL(append_log(*log_item))) {
-          } else {
-            // can't access log_item after append_log
-            if (tl_type >= 0 && tl_type < MAX_TASK_LOG_TYPE) {
-              (void)ATOMIC_AAF(current_written_count_ + tl_type, 1);
-            }
-            last_logging_seq_ = curr_logging_seq_;
-            BASIC_TIME_GUARD_CLICK("APPEND_END");
+          // can't access log_item after append_log
+          if (tl_type >= 0 && tl_type < MAX_TASK_LOG_TYPE) {
+            (void)ATOMIC_AAF(current_written_count_ + tl_type, 1);
           }
+          last_logging_seq_ = curr_logging_seq_;
+          BASIC_TIME_GUARD_CLICK("APPEND_END");
         }
       } else {
         flush_logs_to_file(&log_item, 1);
         BASIC_TIME_GUARD_CLICK("FLUSH_END");
       }
-
       // stat
       if (OB_FAIL(ret)) {
         inc_dropped_log_count(level);
-        if ((char*)log_item != local_buf_) {
-          free_log_item(log_item);
-        }
-        log_item = NULL;
-        BASIC_TIME_GUARD_CLICK("FREE_END");
       }
       check_reset_force_allows();
+      if (!is_async || OB_FAIL(ret)) {
+        free_log_item(log_item);
+      }
     } /* not allow */
+    BASIC_TIME_GUARD_CLICK("FREE_END");
   }
 #ifndef OB_BUILD_PACKAGE
   const int64_t threshold_us = 500 * 1000;
@@ -1330,16 +1395,22 @@ _Pragma("GCC diagnostic pop")
 }
 
 template <typename ... Args>
+#ifdef _WIN32
+__attribute__((noinline)) void OB_PRINT(const char *mod_name, const int32_t level, const char *file, const int32_t line,
+#else
 __attribute__((noinline, cold)) void OB_PRINT(const char *mod_name, const int32_t level, const char *file, const int32_t line,
+#endif
               const char *function,
               const int errcode, const char *info_string,
               const char *, /* placeholder */
               Args const && ... args)
 {
   int ret = OB_SUCCESS;
+#ifndef _WIN32
   if (OB_LOG_LEVEL_ERROR == level) {
     OB_LOGGER.issue_dba_error(errcode, file, line, info_string);
   }
+#endif
   if (OB_LIKELY(!OB_LOGGER.get_guard())) {
     OB_LOGGER.get_guard() = true;
     OB_LOGGER.log_message_kv(mod_name, level, file, line, function, errcode,
@@ -1358,6 +1429,9 @@ void OB_PRINT_DBA(const char *mod_name, const char *mod_name_bracket,
                   const char *, /* placeholder */
                   Args const && ... args)
 {
+#ifdef _WIN32
+  if (OB_UNLIKELY(!g_ob_log_main_entered)) return;
+#endif
   if (OB_LIKELY(!OB_LOGGER.get_guard())) {
     OB_LOGGER.get_guard() = true;
     OB_LOGGER.log_message_value(mod_name_bracket, nullptr, level, file, line, function, errcode, false,
@@ -1369,12 +1443,18 @@ void OB_PRINT_DBA(const char *mod_name, const char *mod_name_bracket,
 __attribute__((noinline, cold))
 inline bool need_to_print(const int32_t level)
 {
+#ifdef _WIN32
+  if (OB_UNLIKELY(!g_ob_log_main_entered)) return false;
+#endif
   return OB_LOGGER.need_to_print(level);
 }
 
 __attribute__((noinline, cold))
 inline bool need_to_print(const uint64_t par_mod_id, const int32_t level)
 {
+#ifdef _WIN32
+  if (OB_UNLIKELY(!g_ob_log_main_entered)) return false;
+#endif
   return OB_LOGGER.need_to_print(par_mod_id, level);
 }
 
@@ -1382,6 +1462,9 @@ __attribute__((noinline, cold))
 inline bool need_to_print(const uint64_t par_mod_id, const uint64_t sub_mod_id,
                           const int32_t level)
 {
+#ifdef _WIN32
+  if (OB_UNLIKELY(!g_ob_log_main_entered)) return false;
+#endif
   return OB_LOGGER.need_to_print(par_mod_id, sub_mod_id, level);
 }
 

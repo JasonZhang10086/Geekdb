@@ -1162,7 +1162,7 @@ void ObDDLScheduler::do_work()
     while (!has_set_stop() && !lib::Thread::current().has_set_stop()) {
       LOG_TRACE("[SYS_DDL_SCHEDULER] begin one round", "tenant_id", MTL_ID());
       const bool stop = task_queue_.has_set_stop();
-      bool do_idle = false;
+      int64_t idle_time = 0;
       if (OB_FAIL(task_queue_.get_next_task(task))) {
         if (common::OB_ENTRY_NOT_EXIST == ret) {
           if (stop) {
@@ -1175,7 +1175,7 @@ void ObDDLScheduler::do_work()
         } else {
           LOG_WARN("fail to get next task", K(ret));
         }
-        do_idle = true;
+        idle_time = ObDDLTask::MAX_IDLE_TIME_US;
       } else if (OB_ISNULL(task)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("error unexpected, task must not be NULL", K(ret));
@@ -1190,12 +1190,13 @@ void ObDDLScheduler::do_work()
             }
           }
         }
-        do_idle = true;
+        idle_time = ObDDLTask::DEFAULT_TASK_IDLE_TIME_US;
       } else {
         ObDIActionGuard ag(get_ddl_type(task->get_task_type()));
         ObCurTraceId::set(task->get_trace_id());
         int task_ret = task->process();
         task->calc_next_schedule_ts(task_ret, task_queue_.get_task_cnt() + thread_cnt);
+        const bool need_schedule = task->need_schedule();
         if (task->need_retry() && !stop && !ObIDDLTask::is_ddl_force_no_more_process(task_ret)) {
           if (OB_FAIL(task_queue_.add_task_to_last(task))) {
             if (OB_STATE_NOT_MATCH == ret) {
@@ -1205,15 +1206,17 @@ void ObDDLScheduler::do_work()
                 LOG_WARN("remove ddl task failed", K(ret));
               }
             }
+          } else if (need_schedule) {
+            idler_.wakeup();
           }
           first_retry_task = nullptr == first_retry_task ? task : first_retry_task;
         } else if (OB_FAIL(remove_ddl_task(task))) {
           LOG_WARN("remove ddl task failed", K(ret));
         }
       }
-      if (do_idle) {
+      if (idle_time > 0) {
         first_retry_task = nullptr;
-        idler_.idle(ObDDLTask::DEFAULT_TASK_IDLE_TIME_US);
+        idler_.idle(idle_time);
       }
       LOG_TRACE("[SYS_DDL_SCHEDULER] finish one round", "tenant_id", MTL_ID());
     }
@@ -3127,59 +3130,60 @@ int ObDDLScheduler::recover_task()
 
     ObSqlString sql_string;
     ObArray<ObDDLTaskRecord> task_records;
-    ObArray<uint64_t> primary_tenant_ids;
     ObArenaAllocator allocator(lib::ObLabel("DdlTasRecord"));
+    bool is_primary_cluster = true;
     if (OB_FAIL(ObDDLTaskRecordOperator::get_all_ddl_task_record(*GCTX.sql_proxy_, allocator, task_records))) {
       LOG_WARN("get task record failed", K(ret), K(sql_string));
-    } else if (OB_FAIL(ObAllTenantInfoProxy::get_primary_tenant_ids(GCTX.sql_proxy_, primary_tenant_ids))) {
-      LOG_WARN("get primary tenant id failed", K(ret));
-    }
-    LOG_INFO("start processing ddl recovery", "ddl_event_info", ObDDLEventInfo(), K(task_records), K(primary_tenant_ids));
-    for (int64_t i = 0; OB_SUCC(ret) && i < task_records.count(); ++i) {
-      const ObDDLTaskRecord &cur_record = task_records.at(i);
-      int64_t tenant_schema_version = 0;
-      int64_t table_task_status = 0;
-      int64_t execution_id = -1;
-      int64_t ret_code = OB_SUCCESS;
-      int64_t unused_snapshot_ver = OB_INVALID_VERSION;
-      bool is_recover_table_aux_tenant = false;
-      ObMySQLTransaction trans;
-      if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_version(cur_record.tenant_id_, tenant_schema_version))) {
-        LOG_WARN("failed to get tenant schema version", K(ret), K(cur_record));
-      } else if (!is_tenant_primary(primary_tenant_ids, cur_record.tenant_id_) && OB_SYS_TENANT_ID != cur_record.tenant_id_) {
-        LOG_INFO("tenant not primary, skip schedule ddl task", K(cur_record));
-      } else if (tenant_schema_version < cur_record.schema_version_) {
-        // schema has not publish, by pass now
-        LOG_INFO("skip schedule ddl task, because tenant schema version too old", K(tenant_schema_version), K(cur_record));
-      } else if (OB_FAIL(ObImportTableUtil::check_is_recover_table_aux_tenant(*GCTX.schema_service_,
-                                                                              cur_record.tenant_id_,
-                                                                              is_recover_table_aux_tenant))) {
-        LOG_WARN("failed to check is recover table aux tenant", K(ret), K(cur_record));
-      } else if (is_recover_table_aux_tenant) {
-        LOG_INFO("tenant is recover table aux tenant, skip schedule ddl task", K(cur_record));
-      } else if (OB_FAIL(ObDDLUtil::check_tenant_status_normal(GCTX.sql_proxy_, cur_record.tenant_id_))) {
-        LOG_INFO("unnormal tenant status", K(ret));
-      } else if (OB_FAIL(trans.start(GCTX.sql_proxy_, cur_record.tenant_id_))) {
-        LOG_WARN("start transaction failed", K(ret));
-      } else if (OB_FAIL(ObDDLTaskRecordOperator::select_for_update(trans,
-                                                                    cur_record.tenant_id_,
-                                                                    cur_record.task_id_,
-                                                                    table_task_status,
-                                                                    execution_id,
-                                                                    ret_code,
-                                                                    unused_snapshot_ver))) {
-        LOG_WARN("select for update failed", K(ret), K(cur_record));
-      } else if (OB_FAIL(schedule_ddl_task(cur_record))) {
-        LOG_WARN("failed to schedule ddl task", K(ret), K(cur_record));
-      }
-      bool commit = (OB_SUCCESS == ret);
-      int tmp_ret = trans.end(commit);
-      if (OB_SUCCESS != tmp_ret) {
-        ret = (OB_SUCCESS == ret) ? tmp_ret : ret;
-      }
-      ret = OB_SUCCESS; // ignore ret
+    } else if (OB_FAIL(ObShareUtil::is_primary_cluster(is_primary_cluster))) {
+      LOG_WARN("fail to check whether is primary cluster", KR(ret), K(is_primary_cluster));
+    } else if (!is_primary_cluster) {
+      LOG_INFO("cluster not primary, skip schedule ddl task", K(is_primary_cluster));
+    } else {
+      LOG_INFO("start processing ddl recovery", "ddl_event_info", ObDDLEventInfo(), K(task_records));
+      for (int64_t i = 0; OB_SUCC(ret) && i < task_records.count(); ++i) {
+        const ObDDLTaskRecord &cur_record = task_records.at(i);
+        int64_t tenant_schema_version = 0;
+        int64_t table_task_status = 0;
+        int64_t execution_id = -1;
+        int64_t ret_code = OB_SUCCESS;
+        int64_t unused_snapshot_ver = OB_INVALID_VERSION;
+        bool is_recover_table_aux_tenant = false;
+        ObMySQLTransaction trans;
+        if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_version(cur_record.tenant_id_, tenant_schema_version))) {
+          LOG_WARN("failed to get tenant schema version", K(ret), K(cur_record));
+        } else if (tenant_schema_version < cur_record.schema_version_) {
+          // schema has not publish, by pass now
+          LOG_INFO("skip schedule ddl task, because tenant schema version too old", K(tenant_schema_version), K(cur_record));
+        } else if (OB_FAIL(ObImportTableUtil::check_is_recover_table_aux_tenant(*GCTX.schema_service_,
+                                                                                cur_record.tenant_id_,
+                                                                                is_recover_table_aux_tenant))) {
+          LOG_WARN("failed to check is recover table aux tenant", K(ret), K(cur_record));
+        } else if (is_recover_table_aux_tenant) {
+          LOG_INFO("tenant is recover table aux tenant, skip schedule ddl task", K(cur_record));
+        } else if (OB_FAIL(ObDDLUtil::check_tenant_status_normal(GCTX.sql_proxy_, cur_record.tenant_id_))) {
+          LOG_INFO("unnormal tenant status", K(ret));
+        } else if (OB_FAIL(trans.start(GCTX.sql_proxy_, cur_record.tenant_id_))) {
+          LOG_WARN("start transaction failed", K(ret));
+        } else if (OB_FAIL(ObDDLTaskRecordOperator::select_for_update(trans,
+                                                                      cur_record.tenant_id_,
+                                                                      cur_record.task_id_,
+                                                                      table_task_status,
+                                                                      execution_id,
+                                                                      ret_code,
+                                                                      unused_snapshot_ver))) {
+          LOG_WARN("select for update failed", K(ret), K(cur_record));
+        } else if (OB_FAIL(schedule_ddl_task(cur_record))) {
+          LOG_WARN("failed to schedule ddl task", K(ret), K(cur_record));
+        }
+        bool commit = (OB_SUCCESS == ret);
+        int tmp_ret = trans.end(commit);
+        if (OB_SUCCESS != tmp_ret) {
+          ret = (OB_SUCCESS == ret) ? tmp_ret : ret;
+        }
+        ret = OB_SUCCESS; // ignore ret
 
-      LOG_INFO("recover ddl task", K(ret), "ddl_event_info", ObDDLEventInfo(), K(cur_record));
+        LOG_INFO("recover ddl task", K(ret), "ddl_event_info", ObDDLEventInfo(), K(cur_record));
+      }
     }
   }
   return ret;

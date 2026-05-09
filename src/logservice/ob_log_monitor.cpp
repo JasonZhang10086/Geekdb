@@ -268,7 +268,7 @@ int ObLogMonitor::record_role_change_event(const int64_t palf_id,
   const int64_t MAX_BUF_LEN = 50;
   char prev_str[MAX_BUF_LEN] = {'\0'};
   char curr_str[MAX_BUF_LEN] = {'\0'};
-  TIMEGUARD_INIT(LOG_MONITOR, 100_ms, 5_s);                                                                         \
+  TIMEGUARD_INIT(LOG_MONITOR, 100_ms);                                                                              \
   if (0 >= (pret = snprintf(prev_str, MAX_BUF_LEN, "%s %s", role_to_string(prev_role),
       replica_state_to_string(prev_state)))) {
     ret = OB_ERR_UNEXPECTED;
@@ -311,7 +311,7 @@ int ObLogMonitor::record_parent_child_change_event(const int64_t palf_id,
   const char *object_str = (is_parent)? "PARENT": "CHILD";
   const int64_t MAX_BUF_LEN = 50;
   char event_str[MAX_BUF_LEN] = {'\0'};
-  TIMEGUARD_INIT(LOG_MONITOR, 100_ms, 5_s);                                                                         \
+  TIMEGUARD_INIT(LOG_MONITOR, 100_ms);                                                                              \
   if (0 >= (pret = snprintf(event_str, MAX_BUF_LEN, "%s %s", action_str, object_str))) {
     ret = OB_ERR_UNEXPECTED;
     CLOG_LOG(ERROR, "snprintf failed", KR(ret), K(action_str), K(object_str));
@@ -345,48 +345,6 @@ int ObLogMonitor::add_log_write_stat(const int64_t palf_id, const int64_t log_wr
   return ret;
 }
 // =========== PALF Performance Statistic ===========
-
-#ifdef OB_BUILD_ARBITRATION
-// =========== Arbitration Event Reporting ===========
-#define ARBSRV_MONITOR_EVENT_FMT_PREFIX "ARB", type_to_string_(event), "TENANT_ID", mtl_id, "LS_ID", palf_id
-int ObLogMonitor::record_degrade_event(const int64_t palf_id, const char *degraded_list, const char *reasons)
-{
-  int ret = OB_SUCCESS;
-  const int64_t mtl_id = MTL_ID();
-  const EventType event = EventType::DEGRADE;
-  SERVER_EVENT_ADD_WITH_RETRY(ARBSRV_MONITOR_EVENT_FMT_PREFIX,
-      "DEGRADED LIST", degraded_list,
-      "REASONS", reasons);
-  return ret;
-}
-
-int ObLogMonitor::record_upgrade_event(const int64_t palf_id, const char *upgraded_list, const char *reasons)
-{
-  int ret = OB_SUCCESS;
-  const int64_t mtl_id = MTL_ID();
-  const EventType event = EventType::UPGRADE;
-  SERVER_EVENT_ADD_WITH_RETRY(ARBSRV_MONITOR_EVENT_FMT_PREFIX,
-      "UPGRADED LIST", upgraded_list,
-      "REASONS", reasons);
-  return ret;
-}
-
-int ObLogMonitor::record_election_silent_event(const bool is_silent, const int64_t palf_id)
-{
-  int ret = OB_SUCCESS;
-  const int64_t mtl_id = MTL_ID();
-  EventType event = EventType::UNKNOWN;
-  if (is_silent) {
-    event = EventType::ENTER_ELECTION_SILENT;
-  } else {
-    event = EventType::EXIT_ELECTION_SILENT;
-  }
-  SERVER_EVENT_ADD_WITH_RETRY(ARBSRV_MONITOR_EVENT_FMT_PREFIX);
-  return ret;
-}
-#undef ARBSRV_MONITOR_EVENT_FMT_PREFIX
-// =========== Arbitration Event Reporting ===========
-#endif
 
 #undef LOG_MONITOR_EVENT_FMT_PREFIX
 } // end namespace logservice

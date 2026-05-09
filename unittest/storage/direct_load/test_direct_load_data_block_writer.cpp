@@ -85,7 +85,6 @@ public:
     ObAddr self;
     obrpc::ObSrvRpcProxy rpc_proxy;
     obrpc::ObCommonRpcProxy rs_rpc_proxy;
-    share::ObRsMgr rs_mgr;
     self.set_ip_addr("127.0.0.1", 8086);
     rpc::frame::ObReqTransport req_transport(NULL, NULL);
     const int64_t ulmt = 128LL << 30;
@@ -428,17 +427,18 @@ void TestDataBlockWriter::SetUp()
   ASSERT_NE(nullptr, table_mgr_ = OB_NEWx(ObDirectLoadTableManager, (&allocator_)));
   ASSERT_EQ(OB_SUCCESS, table_mgr_->init());
 
-  ASSERT_EQ(OB_SUCCESS, getter.add_tenant(1, 8L * 1024L * 1024L, 2L * 1024L * 1024L * 1024L));
+  ASSERT_EQ(OB_SUCCESS, getter.add_tenant(1, 8LL * 1024 * 1024, 2LL * 1024 * 1024 * 1024));
   if (OB_FAIL(ObKVGlobalCache::get_instance().init(&getter, bucket_num, max_cache_size, block_size))) {
     ASSERT_EQ(OB_INIT_TWICE, ret);
     ret = OB_SUCCESS;
   }
   // set observer memory limit
-  CHUNK_MGR.set_limit(8L * 1024L * 1024L * 1024L);
+  CHUNK_MGR.set_limit(8LL * 1024 * 1024 * 1024);
   EXPECT_EQ(OB_SUCCESS, init_tenant_mgr());
   ASSERT_EQ(OB_SUCCESS, common::ObClockGenerator::init());
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpBlockCache::get_instance().init("tmp_block_cache", 1));
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpPageCache::get_instance().init("sn_tmp_page_cache", 1));
+  ASSERT_EQ(OB_SUCCESS, ObTimerService::get_instance().start());
 
   static ObTenantBase tenant_ctx(OB_SYS_TENANT_ID);
   ObTenantEnv::set_tenant(&tenant_ctx);
@@ -447,11 +447,6 @@ void TestDataBlockWriter::SetUp()
   EXPECT_EQ(OB_SUCCESS, ObTenantIOManager::mtl_init(io_service));
   EXPECT_EQ(OB_SUCCESS, io_service->start());
   tenant_ctx.set(io_service);
-
-  ObTimerService *timer_service = nullptr;
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_new(timer_service));
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
-  tenant_ctx.set(timer_service);
 
   tmp_file::ObTenantTmpFileManager *tf_mgr = nullptr;
   EXPECT_EQ(OB_SUCCESS, mtl_new_default(tf_mgr));
@@ -472,11 +467,9 @@ void TestDataBlockWriter::TearDown()
   tmp_file::ObTmpPageCache::get_instance().destroy();
   common::ObClockGenerator::destroy();
   ObKVGlobalCache::get_instance().destroy();
-  ObTimerService *timer_service = MTL(ObTimerService *);
-  ASSERT_NE(nullptr, timer_service);
-  timer_service->stop();
-  timer_service->wait();
-  timer_service->destroy();
+  ObTimerService::get_instance().stop();
+  ObTimerService::get_instance().wait();
+  ObTimerService::get_instance().destroy();
   TestDataFilePrepare::TearDown();
 }
 

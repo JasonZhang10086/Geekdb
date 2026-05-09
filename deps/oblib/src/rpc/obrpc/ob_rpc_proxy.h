@@ -17,6 +17,11 @@
 #ifndef OCEANBASE_RPC_OBRPC_OB_RPC_PROXY_
 #define OCEANBASE_RPC_OBRPC_OB_RPC_PROXY_
 
+#ifdef _WIN32
+#pragma push_macro("IGNORE")
+#undef IGNORE
+#endif
+
 #include <stdint.h>
 #include "lib/string/ob_string.h"
 #include "lib/allocator/page_arena.h"
@@ -96,11 +101,12 @@ public:
     {
       return cloned_;
     }
+    Response &result() { return result_; }
+    ObRpcResultCode &rcode() { return rcode_; }
 
     virtual void set_args(const Request &arg) = 0;
     virtual void destroy() {}
 
-  protected:
 
   protected:
     /*

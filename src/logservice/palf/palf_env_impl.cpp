@@ -16,10 +16,14 @@
 
 #define USING_LOG_PREFIX PALF
 #include "palf_env_impl.h"
+#ifdef _WIN32
+#include <direct.h>
+#endif
 #include "palf_handle.h"
 #include "share/ob_local_device.h"                            // ObLocalDevice
 #include "share/resource_manager/ob_resource_manager.h"       // ObResourceManager
 #include "share/io/ob_io_manager.h"                           // ObIOManager
+#include "lib/ob_running_mode.h"
 
 namespace oceanbase
 {
@@ -209,7 +213,7 @@ int PalfEnvImpl::init(
     common::ObILogAllocator *log_alloc_mgr,
     ILogBlockPool *log_block_pool,
     PalfMonitorCb *monitor,
-    ObLocalDevice *log_local_device,
+    common::ObIODevice *log_local_device,
     ObResourceManager *resource_manager,
     ObIOManager *io_manager)
 {
@@ -229,7 +233,7 @@ int PalfEnvImpl::init(
                                                 tenant_id,
                                                 log_io_worker_config_))) {
     PALF_LOG(WARN, "init_log_io_worker_config_ failed", K(options));
-  } else if (OB_FAIL(fetch_log_engine_.init(this, log_alloc_mgr))) {
+  } else if (!lib::is_embed_mode() && OB_FAIL(fetch_log_engine_.init(this, log_alloc_mgr))) {
     PALF_LOG(ERROR, "FetchLogEngine init failed", K(ret));
   } else if (OB_FAIL(log_rpc_.init(self, cluster_id, tenant_id, transport, batch_rpc))) {
     PALF_LOG(ERROR, "LogRpc init failed", K(ret));
@@ -296,7 +300,7 @@ int PalfEnvImpl::start()
     PALF_LOG(ERROR, "LogIOWorker start failed", K(ret));
   } else if (OB_FAIL(block_gc_timer_task_.start())) {
     PALF_LOG(ERROR, "FileCollectTimerTask start failed", K(ret));
-	} else if (OB_FAIL(fetch_log_engine_.start())) {
+	} else if (!lib::is_embed_mode() && OB_FAIL(fetch_log_engine_.start())) {
     PALF_LOG(ERROR, "FetchLogEngine start failed", K(ret));
   } else if (OB_FAIL(log_loop_thread_.start())) {
     PALF_LOG(ERROR, "log_loop_thread_ start failed", K(ret));
@@ -549,13 +553,25 @@ int PalfEnvImpl::create_directory(const char *base_dir)
   } else if (0 > (pret = snprintf(meta_dir, MAX_PATH_SIZE, "%s/meta", tmp_base_dir))) {
     ret = OB_ERR_UNEXPECTED;
     PALF_LOG(ERROR, "snprinf failed", K(pret), K(base_dir));
+#ifdef _WIN32
+  } else if (-1 == (::_mkdir(tmp_base_dir))) {
+#else
   } else if (-1 == (::mkdir(tmp_base_dir, mode))) {
+#endif
     ret = convert_sys_errno();
     PALF_LOG(WARN, "mkdir failed", K(ret), K(errno), K(tmp_base_dir), K(base_dir));
+#ifdef _WIN32
+  } else if (-1 == (::_mkdir(log_dir))) {
+#else
   } else if (-1 == (::mkdir(log_dir, mode))) {
+#endif
     ret = convert_sys_errno();
     PALF_LOG(WARN, "mkdir failed", K(ret), K(errno), K(tmp_base_dir), K(base_dir));
+#ifdef _WIN32
+  } else if (-1 == (::_mkdir(meta_dir))) {
+#else
   } else if (-1 == (::mkdir(meta_dir, mode))) {
+#endif
     ret = convert_sys_errno();
     PALF_LOG(WARN, "mkdir failed", K(ret), K(errno), K(tmp_base_dir), K(base_dir));
   } else if (OB_FAIL(rename_with_retry(tmp_base_dir, base_dir))) {
@@ -1232,7 +1248,11 @@ int PalfEnvImpl::move_incomplete_palf_into_tmp_dir_(const int64_t palf_id)
         K(palf_id), KPC(this));;
   } else if (OB_FAIL(check_tmp_log_dir_exist_(tmp_dir_exist))) {
     PALF_LOG(WARN, "check_tmp_log_dir_exist_ failed", K(ret), KPC(this), K(tmp_log_dir_));
+#ifdef _WIN32
+  } else if (false == tmp_dir_exist && (-1 == ::_mkdir(tmp_log_dir_))) {
+#else
   } else if (false == tmp_dir_exist && (-1 == ::mkdir(tmp_log_dir_, mode))) {
+#endif
     ret = convert_sys_errno();
     PALF_LOG(ERROR, "mkdir tmp log dir failed", K(ret), KPC(this), K(tmp_log_dir_));
   } else if (0 > (pret = snprintf(src_log_dir, MAX_PATH_SIZE, "%s/%ld", log_dir_, palf_id))) {

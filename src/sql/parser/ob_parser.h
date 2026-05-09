@@ -23,7 +23,6 @@
 #include "lib/string/ob_string.h"
 #include "lib/charset/ob_charset.h"
 #include "sql/parser/ob_parser_utils.h"
-#include "sql/udr/ob_udr_struct.h"
 
 namespace oceanbase
 {
@@ -54,8 +53,7 @@ class ObParser
 {
 public:
   explicit ObParser(common::ObIAllocator &allocator, ObSQLMode mode,
-                    ObCharsets4Parser charsets4parser = ObCharsets4Parser(),
-                    QuestionMarkDefNameCtx *ctx = nullptr);
+                    ObCharsets4Parser charsets4parser = ObCharsets4Parser());
   virtual ~ObParser();
   /// @param queries Note that all three members of ObString is valid, size() is the length
   ///                of the single statement, length() is the length of remainer statements
@@ -112,6 +110,10 @@ public:
   static int pre_parse(const common::ObString &stmt,
                        PreParseResult &res);
 
+// Windows winbase.h defines S_NORMAL as 0, which conflicts with this enum
+#ifdef S_NORMAL
+#undef S_NORMAL
+#endif
 enum State {
   S_START = 0,
   S_COMMENT,
@@ -209,7 +211,6 @@ private:
   ObSQLMode sql_mode_;
 
   ObCharsets4Parser charsets4parser_;
-  QuestionMarkDefNameCtx *def_name_ctx_;
 };
 
 } // end namespace sql

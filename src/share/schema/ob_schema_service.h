@@ -196,11 +196,6 @@ enum ObSchemaOperationCategory
   ACT(OB_DDL_ALTER_OUTLINE,)                                     \
   ACT(OB_DDL_OUTLINE_OPERATION_END, = 800)                       \
   ACT(OB_DDL_ZONE_OPERATION_BEGIN, = 801)                        \
-  ACT(OB_DDL_ALTER_ZONE,)                                        \
-  ACT(OB_DDL_ADD_ZONE,)                                          \
-  ACT(OB_DDL_DELETE_ZONE,)                                       \
-  ACT(OB_DDL_START_ZONE,)                                        \
-  ACT(OB_DDL_STOP_ZONE,)                                         \
   ACT(OB_DDL_ZONE_OPERATION_END, = 900)                          \
   ACT(OB_DDL_SYNONYM_OPERATION_BEGIN, = 901)                     \
   ACT(OB_DDL_CREATE_SYNONYM,)                                    \
@@ -940,6 +935,10 @@ public:
   virtual int get_core_version(common::ObISQLClient &sql_client,
                                const ObRefreshSchemaStatus &schema_status,
                                int64_t &core_schema_version) = 0;
+  virtual int get_core_and_sys_version(common::ObISQLClient &sql_client,
+                               const uint64_t &tenant_id,
+                               int64_t &core_schema_version,
+                               int64_t &sys_schema_version) = 0;
   virtual int get_baseline_schema_version(common::ObISQLClient &sql_client,
                                           const ObRefreshSchemaStatus &schema_status,
                                           int64_t &baseline_schema_version) = 0;
@@ -1142,10 +1141,6 @@ public:
       common::ObIArray<ObDropTenantInfo> &drop_tenant_infos) = 0;
 
   // for liboblog used
-  virtual int query_tenant_status(
-      common::ObISQLClient &sql_client,
-      const uint64_t tenant_id,
-      TenantStatus &tenant_status) = 0;
   virtual int get_schema_version_by_timestamp(
       common::ObISQLClient &sql_client,
       const ObRefreshSchemaStatus &schema_status,
@@ -1294,7 +1289,10 @@ public:
               common::ObIArray<ObString> &table_names,
               common::ObIArray<uint64_t> &table_ids) = 0;
   /*----------- interfaces for latest schema end -------------*/
-
+  static bool in_parallel_ddl_thread()
+  {
+    return 0 == STRCASECMP(PARALLEL_DDL_THREAD_NAME, ob_get_origin_thread_name());
+  }
 };
 }//namespace schema
 }//namespace share

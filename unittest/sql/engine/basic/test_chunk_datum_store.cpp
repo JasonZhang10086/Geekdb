@@ -171,6 +171,7 @@ public:
     blocksstable::TestDataFilePrepare::SetUp();
     ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpBlockCache::get_instance().init("tmp_block_cache", 1));
     ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpPageCache::get_instance().init("sn_tmp_page_cache", 1));
+    ASSERT_EQ(OB_SUCCESS, ObTimerService::get_instance().start());
     if (!is_server_tenant(tenant_id_)) {
       static ObTenantBase tenant_ctx(tenant_id_);
       ObTenantEnv::set_tenant(&tenant_ctx);
@@ -179,11 +180,6 @@ public:
       EXPECT_EQ(OB_SUCCESS, ObTenantIOManager::mtl_init(io_service));
       EXPECT_EQ(OB_SUCCESS, io_service->start());
       tenant_ctx.set(io_service);
-
-      ObTimerService *timer_service = nullptr;
-      EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_new(timer_service));
-      EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
-      tenant_ctx.set(timer_service);
 
       tmp_file::ObTenantTmpFileManager *tf_mgr = nullptr;
       EXPECT_EQ(OB_SUCCESS, mtl_new_default(tf_mgr));
@@ -229,11 +225,9 @@ public:
 
     tmp_file::ObTmpBlockCache::get_instance().destroy();
     tmp_file::ObTmpPageCache::get_instance().destroy();
-    ObTimerService *timer_service = MTL(ObTimerService *);
-    ASSERT_NE(nullptr, timer_service);
-    timer_service->stop();
-    timer_service->wait();
-    timer_service->destroy();
+    ObTimerService::get_instance().stop();
+    ObTimerService::get_instance().wait();
+    ObTimerService::get_instance().destroy();
     blocksstable::TestDataFilePrepare::TearDown();
     LOG_INFO("TearDown finished", K_(rs));
   }
@@ -439,11 +433,10 @@ int TestChunkDatumStore::init_tenant_mgr()
   oceanbase::rpc::frame::ObReqTransport req_transport(NULL, NULL);
   oceanbase::obrpc::ObSrvRpcProxy rpc_proxy;
   oceanbase::obrpc::ObCommonRpcProxy rs_rpc_proxy;
-  oceanbase::share::ObRsMgr rs_mgr;
   int64_t tenant_id = OB_SYS_TENANT_ID;
   self.set_ip_addr("127.0.0.1", 8086);
   ret = getter.add_tenant(tenant_id,
-                          2L * 1024L * 1024L * 1024L, 4L * 1024L * 1024L * 1024L);
+                          2LL * 1024 * 1024 * 1024, 4LL * 1024 * 1024 * 1024);
   EXPECT_EQ(OB_SUCCESS, ret);
   const int64_t ulmt = 128LL << 30;
   const int64_t llmt = 128LL << 30;
@@ -521,7 +514,7 @@ TEST_F(TestChunkDatumStore, has_next_bug)
   ASSERT_EQ(OB_ITER_END, it.get_next_row(ver_cells_, eval_ctx_));
 
   int64_t mem_used = rs_alloc_.total_ - mem_before_iterate;
-  ASSERT_LT(mem_used, 500L * 1024L)
+  ASSERT_LT(mem_used, 500LL * 1024)
       << " mem_before_iterate: " << mem_before_iterate
       << " cur_mem: " << rs_alloc_.total_;
 }
@@ -546,7 +539,7 @@ TEST_F(TestChunkDatumStore, iteration_age)
     CALL(verify_row, it, i, true);
   }
   int64_t mem_used = rs_alloc_.total_ - mem_before_iterate;
-  ASSERT_GT(mem_used, 1024L * 1024L)
+  ASSERT_GT(mem_used, 1LL * 1024 * 1024)
       << " mem_before_iterate: " << mem_before_iterate
       << " cur_mem: " << rs_alloc_.total_;
 
@@ -559,7 +552,7 @@ TEST_F(TestChunkDatumStore, iteration_age)
   }
 
   mem_used = rs_alloc_.total_ - mem_before_iterate;
-  ASSERT_LT(mem_used, 500L * 1024L)
+  ASSERT_LT(mem_used, 500LL * 1024)
       << " mem_before_iterate: " << mem_before_iterate
       << " cur_mem: " << rs_alloc_.total_;
 }

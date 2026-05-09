@@ -313,7 +313,7 @@ void TestBackupIndexMerger::SetUp()
   const int64_t block_size = common::OB_MALLOC_BIG_BLOCK_SIZE;
   TestDataFilePrepare::SetUp();
 
-  ret = getter.add_tenant(1, 8L * 1024L * 1024L, 2L * 1024L * 1024L * 1024L);
+  ret = getter.add_tenant(1, 8LL * 1024 * 1024, 2LL * 1024 * 1024 * 1024);
   EXPECT_EQ(OB_SUCCESS, ret);
   ret = ObKVGlobalCache::get_instance().init(&getter, bucket_num, max_cache_size, block_size);
   if (OB_INIT_TWICE == ret) {
@@ -322,7 +322,7 @@ void TestBackupIndexMerger::SetUp()
     EXPECT_EQ(OB_SUCCESS, ret);
   }
   // set observer memory limit
-  CHUNK_MGR.set_limit(8L * 1024L * 1024L * 1024L);
+  CHUNK_MGR.set_limit(8LL * 1024 * 1024 * 1024);
 
   ASSERT_EQ(OB_SUCCESS, common::ObClockGenerator::init());
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpBlockCache::get_instance().init("tmp_block_cache", 1));
@@ -330,6 +330,7 @@ void TestBackupIndexMerger::SetUp()
 
 
   EXPECT_EQ(OB_SUCCESS, ObDeviceManager::get_instance().init_devices_env());
+  ASSERT_EQ(OB_SUCCESS, ObTimerService::get_instance().start());
 
   static ObTenantBase tenant_ctx(OB_SYS_TENANT_ID);
   ObTenantEnv::set_tenant(&tenant_ctx);
@@ -338,11 +339,6 @@ void TestBackupIndexMerger::SetUp()
   EXPECT_EQ(OB_SUCCESS, ObTenantIOManager::mtl_init(io_service));
   EXPECT_EQ(OB_SUCCESS, io_service->start());
   tenant_ctx.set(io_service);
-
-  ObTimerService *timer_service = nullptr;
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_new(timer_service));
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
-  tenant_ctx.set(timer_service);
 
   tmp_file::ObTenantTmpFileManager *tf_mgr = nullptr;
   EXPECT_EQ(OB_SUCCESS, mtl_new_default(tf_mgr));
@@ -362,11 +358,9 @@ void TestBackupIndexMerger::TearDown()
   tmp_file::ObTmpPageCache::get_instance().destroy();
   ObKVGlobalCache::get_instance().destroy();
   common::ObClockGenerator::destroy();
-  ObTimerService *timer_service = MTL(ObTimerService *);
-  ASSERT_NE(nullptr, timer_service);
-  timer_service->stop();
-  timer_service->wait();
-  timer_service->destroy();
+  ObTimerService::get_instance().stop();
+  ObTimerService::get_instance().wait();
+  ObTimerService::get_instance().destroy();
 }
 
 void TestBackupIndexMerger::inner_init_()
@@ -377,7 +371,7 @@ void TestBackupIndexMerger::inner_init_()
   char buf[PATH_MAX];
   ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_index_merger_dir", getcwd(buf, sizeof(buf)));
 #else
-  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_index_merger_dir", get_current_dir_name());
+  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_index_merger_dir", getcwd(NULL, 0));
 #endif
   EXPECT_EQ(OB_SUCCESS, ret);
   ret = databuff_printf(test_dir_uri_, sizeof(test_dir_uri_), "file://%s", test_dir_);

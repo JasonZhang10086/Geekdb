@@ -17,6 +17,11 @@
 #include "ob_memstore_allocator.h"
 #include "ob_shared_memory_allocator_mgr.h"
 
+// Undefine macOS system macro to avoid conflict with ObFifoArena::PAGE_SIZE
+#ifdef PAGE_SIZE
+#undef PAGE_SIZE
+#endif
+
 namespace oceanbase
 {
 using namespace share;
@@ -25,7 +30,11 @@ namespace share
 int FrozenMemstoreInfoLogger::operator()(ObDLink* link)
 {
   int ret = OB_SUCCESS;
+#ifdef _WIN32
+  ObMemstoreAllocator::AllocHandle* handle = CONTAINER_OF(link, ObMemstoreAllocator::AllocHandle, total_list_);
+#else
   ObMemstoreAllocator::AllocHandle* handle = CONTAINER_OF(link, typeof(*handle), total_list_);
+#endif
   memtable::ObMemtable& mt = handle->mt_;
   if (handle->is_frozen()) {
     if (OB_FAIL(databuff_print_obj(buf_, limit_, pos_, mt))) {
@@ -39,7 +48,11 @@ int FrozenMemstoreInfoLogger::operator()(ObDLink* link)
 int ActiveMemstoreInfoLogger::operator()(ObDLink* link)
 {
   int ret = OB_SUCCESS;
+#ifdef _WIN32
+  ObMemstoreAllocator::AllocHandle* handle = CONTAINER_OF(link, ObMemstoreAllocator::AllocHandle, total_list_);
+#else
   ObMemstoreAllocator::AllocHandle* handle = CONTAINER_OF(link, typeof(*handle), total_list_);
+#endif
   memtable::ObMemtable& mt = handle->mt_;
   if (handle->is_active()) {
     if (OB_FAIL(databuff_print_obj(buf_, limit_, pos_, mt))) {
@@ -158,7 +171,7 @@ void ObMemstoreAllocator::set_frozen(AllocHandle& handle)
 
 static int64_t calc_nway(int64_t cpu, int64_t mem)
 {
-  return std::min(cpu, mem/20/ObFifoArena::PAGE_SIZE);
+  return std::min(cpu, mem/20/ObFifoArena::ALLOC_PAGE_SIZE);
 }
 
 int64_t ObMemstoreAllocator::nway_per_group()

@@ -14,14 +14,16 @@
  * limitations under the License.
  */
 
+#define USING_LOG_PREFIX COMMON
+
 #include "common/ob_version_def.h"
 
-namespace oceanbase 
+namespace oceanbase
 {
-namespace common 
+namespace common
 {
 
-int64_t VersionUtil::print_version_str(char *buf, const int64_t buf_len, uint64_t version) 
+int64_t VersionUtil::print_version_str(char *buf, const int64_t buf_len, uint64_t version)
 {
   int ret = OB_SUCCESS;
   int64_t pos = 0;

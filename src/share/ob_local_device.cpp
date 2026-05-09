@@ -14,65 +14,107 @@
  * limitations under the License.
  */
 
+#if defined(__APPLE__) || defined(__ANDROID__) || defined(_WIN32)
+// Define AIO types before including ob_local_device.h, which uses them in class members.
+// Also suppress dummy stubs from the header via OB_LIBAIO_STUB_DEFINED --
+// this translation unit provides working AIO emulation below.
+#define OB_LIBAIO_STUB_DEFINED
+#include <stddef.h>
+#include <stdint.h>
+typedef uintptr_t io_context_t;
+struct iocb {
+  void *data;
+  short aio_lio_opcode;
+  int aio_fildes;
+  void *aio_buf;
+  size_t aio_nbytes;
+  long long aio_offset;
+};
+struct io_event { void *data; struct iocb *obj; long res; long res2; };
+#endif
 #include "ob_local_device.h"
+#ifndef _WIN32
 #include <sys/statvfs.h>
 #include <unistd.h>
-#ifdef __linux__
+#endif
+#if defined(__APPLE__)
+#include <sys/mount.h>
+#include <fcntl.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <chrono>
+#elif defined(__ANDROID__)
+#include <sys/vfs.h>
+#include <linux/falloc.h>
+#elif defined(__linux__)
 #include <sys/vfs.h>
 #include <linux/falloc.h>
 #include <libaio.h>
-#elif defined(__APPLE__)
-#include <sys/mount.h> // For statfs on macOS, replaces sys/vfs.h
-#include <fcntl.h> // For fcntl on macOS (fallocate replacement)
-#include <stdlib.h> // For malloc/free
+#endif
+
+#if defined(__APPLE__) || defined(__ANDROID__) || defined(_WIN32)
+#include <stdlib.h>
+#include <functional>
 #include <mutex>
 #include <vector>
 #include <condition_variable>
-#include <chrono>
 
-// macOS doesn't have libaio, provide a synchronous emulation
+#ifdef _WIN32
+#ifndef O_LARGEFILE
+#define O_LARGEFILE 0
+#endif
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+#include "share/ob_statvfs_win32.h"
+#endif
+
 struct io_event_queue {
   std::mutex mtx;
   std::condition_variable cv;
   std::vector<struct io_event> events;
 };
 
-// macOS doesn't have linux/falloc.h, define fallocate constants
+#if defined(__APPLE__)
 #ifndef FALLOC_FL_KEEP_SIZE
 #define FALLOC_FL_KEEP_SIZE 0x01
 #endif
 #ifndef FALLOC_FL_PUNCH_HOLE
 #define FALLOC_FL_PUNCH_HOLE 0x02
 #endif
+#endif
 
-// libaio emulation functions
+// libaio emulation: synchronous pread/pwrite with event queue
 static inline int io_setup(int maxevents, io_context_t *ctxp) {
   (void)maxevents;
   io_event_queue *q = new (std::nothrow) io_event_queue();
   if (q == nullptr) return -ENOMEM;
   *ctxp = (io_context_t)q;
-  return 0; // Success
+  return 0;
 }
 static inline int io_destroy(io_context_t ctx) {
   io_event_queue *q = (io_event_queue *)ctx;
   if (q != nullptr) {
     delete q;
   }
-  return 0; // Success
+  return 0;
 }
-static inline void io_prep_pwrite(struct iocb *iocb, int fd, void *buf, size_t count, int64_t offset) {
+static inline void io_prep_pwrite(struct iocb *iocb, int fd, void *buf, size_t count, long long offset) {
   iocb->aio_fildes = fd;
   iocb->aio_buf = buf;
   iocb->aio_nbytes = count;
   iocb->aio_offset = offset;
-  iocb->aio_lio_opcode = 1; // Use 1 for PWRITE (IOCB_CMD_PWRITE)
+  iocb->aio_lio_opcode = 1; // IOCB_CMD_PWRITE
 }
-static inline void io_prep_pread(struct iocb *iocb, int fd, void *buf, size_t count, int64_t offset) {
+static inline void io_prep_pread(struct iocb *iocb, int fd, void *buf, size_t count, long long offset) {
   iocb->aio_fildes = fd;
   iocb->aio_buf = buf;
   iocb->aio_nbytes = count;
   iocb->aio_offset = offset;
-  iocb->aio_lio_opcode = 0; // Use 0 for PREAD (IOCB_CMD_PREAD)
+  iocb->aio_lio_opcode = 0; // IOCB_CMD_PREAD
 }
 static inline int io_submit(io_context_t ctx, long nr, struct iocb **iocbpp) {
   io_event_queue *q = (io_event_queue *)ctx;
@@ -82,11 +124,39 @@ static inline int io_submit(io_context_t ctx, long nr, struct iocb **iocbpp) {
   for (long i = 0; i < nr; ++i) {
     struct iocb *iocb = iocbpp[i];
     ssize_t res = 0;
+#ifdef _WIN32
+    HANDLE h = (HANDLE)_get_osfhandle(iocb->aio_fildes);
+    if (h == INVALID_HANDLE_VALUE) {
+      res = -EIO;
+    } else {
+      OVERLAPPED ov = {};
+      ov.Offset = (DWORD)((uint64_t)iocb->aio_offset & 0xFFFFFFFF);
+      ov.OffsetHigh = (DWORD)((uint64_t)iocb->aio_offset >> 32);
+      DWORD bytes = 0;
+      BOOL ok;
+      if (iocb->aio_lio_opcode == 1) {
+        ok = WriteFile(h, iocb->aio_buf, (DWORD)iocb->aio_nbytes, &bytes, &ov);
+      } else {
+        ok = ReadFile(h, iocb->aio_buf, (DWORD)iocb->aio_nbytes, &bytes, &ov);
+      }
+      if (ok) {
+        res = (ssize_t)bytes;
+      } else {
+        DWORD err = GetLastError();
+        if (err == ERROR_HANDLE_EOF) {
+          res = (ssize_t)bytes;
+        } else {
+          res = -EIO;
+        }
+      }
+    }
+#else
     if (iocb->aio_lio_opcode == 1) { // PWRITE
       res = pwrite(iocb->aio_fildes, iocb->aio_buf, iocb->aio_nbytes, iocb->aio_offset);
     } else if (iocb->aio_lio_opcode == 0) { // PREAD
       res = pread(iocb->aio_fildes, iocb->aio_buf, iocb->aio_nbytes, iocb->aio_offset);
     }
+#endif
 
     struct io_event ev;
     ev.data = iocb->data;
@@ -105,7 +175,7 @@ static inline int io_submit(io_context_t ctx, long nr, struct iocb **iocbpp) {
 }
 static inline int io_cancel(io_context_t ctx, struct iocb *iocb, struct io_event *result) {
   (void)ctx; (void)iocb; (void)result;
-  return 0; // Success (stub)
+  return 0;
 }
 static inline int io_getevents(io_context_t ctx, long min_nr, long nr, struct io_event *events, struct timespec *timeout) {
   io_event_queue *q = (io_event_queue *)ctx;
@@ -1448,7 +1518,7 @@ int ObLocalDevice::get_data_disk_used_percentage_(
     int64_t &percent) const
 {
   int ret = OB_SUCCESS;
-  int64_t reserved_size = 4 * 1024 * 1024 * 1024L; // default RESERVED_DISK_SIZE -> 4G
+  int64_t reserved_size = ObStorageLoggerManager::RESERVED_DISK_SIZE;
 
   if (OB_UNLIKELY(!is_marked_)) {
     ret = OB_NOT_INIT;
@@ -1510,6 +1580,22 @@ int ObLocalDevice::resize_block_file(const int64_t new_size)
       ret = ObIODeviceLocalFileOp::convert_sys_errno();
       SHARE_LOG(WARN, "fail to expand file size", K(ret), K(sys_ret), K(block_file_size_),
           K(delta_size), K(new_size), K(errno), KERRMSG);
+    }
+#elif defined(_WIN32)
+    HANDLE h = (HANDLE)_get_osfhandle(block_fd_);
+    if (h != INVALID_HANDLE_VALUE) {
+      LARGE_INTEGER li;
+      li.QuadPart = block_file_size_ + delta_size;
+      if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN) || !SetEndOfFile(h)) {
+        sys_ret = -1;
+      }
+    } else {
+      sys_ret = -1;
+    }
+    if (0 != sys_ret) {
+      ret = ObIODeviceLocalFileOp::convert_sys_errno();
+      SHARE_LOG(WARN, "fail to expand file size", K(ret), K(sys_ret), K(block_file_size_),
+          K(delta_size), K(errno), KERRMSG);
     }
 #else
     if (0 != (sys_ret = ::fallocate(block_fd_, 0, block_file_size_, delta_size))) {

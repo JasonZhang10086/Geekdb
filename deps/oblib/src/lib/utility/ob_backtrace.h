@@ -18,6 +18,18 @@
 #define OCEANBASE_COMMON_OB_BACKTRACE_H_
 
 #include<inttypes.h>
+
+#ifdef __ANDROID__
+// Android Bionic doesn't provide execinfo.h / backtrace().
+// Provide an inline stub that returns 0 frames.
+#include <string.h>
+static inline int backtrace(void **buffer, int size)
+{
+  if (size > 0) memset(buffer, 0, sizeof(void*) * size);
+  return 0;
+}
+#endif
+
 namespace oceanbase
 {
 namespace common
@@ -27,6 +39,17 @@ extern bool g_enable_backtrace;
 const int64_t LBT_BUFFER_LENGTH = 1024;
 int light_backtrace(void **buffer, int size);
 int light_backtrace(void **buffer, int size, int64_t rbp);
+#ifdef _WIN32
+int _ob_backtrace(void** buffer, int size);
+#define ob_backtrace(buffer, size)                                \
+  ({                                                              \
+    int rv = 0;                                                   \
+    if (OB_LIKELY(::oceanbase::common::g_enable_backtrace)) {     \
+      rv = _ob_backtrace(buffer, size);                           \
+    }                                                             \
+    rv;                                                           \
+  })
+#else
 // save one layer of call stack
 #define ob_backtrace(buffer, size)                                \
   ({                                                              \
@@ -36,6 +59,7 @@ int light_backtrace(void **buffer, int size, int64_t rbp);
     }                                                             \
     rv;                                                           \
   })
+#endif
 char *lbt();
 char *lbt(char *buf, int32_t len);
 char *parray(int64_t *array, int size);

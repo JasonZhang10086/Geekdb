@@ -159,7 +159,7 @@ int ObLSTxCtxIterator::get_next_tx_id_(ObTransID& tx_id)
   return ret;
 }
 
-__attribute__((weak)) int ObLSTxCtxMgr::init(const int64_t tenant_id,
+OB_WEAK_SYMBOL int ObLSTxCtxMgr::init(const int64_t tenant_id,
                        const ObLSID &ls_id,
                        ObTxTable *tx_table,
                        ObLockTable *lock_table,
@@ -348,7 +348,7 @@ int ObLSTxCtxMgr::create_tx_ctx_(const ObTxCreateArg &arg,
       // for transfer compatibility, we need old version follower's epoch be 0, so we need not check it
       if (!arg.for_replay_) {
         // pack `epoch(15bit) | ts_ns(48bit)` into int64_t, set most significant bit to zero
-        epoch_v = ~(1UL << 63) & ((epoch << 48) | (ObTimeUtility::current_time_ns() & ~(0xFFFFUL << 48)));
+        epoch_v = ~(1ULL << 63) & ((epoch << 48) | (ObTimeUtility::current_time_ns() & ~(0xFFFFULL << 48)));
       } else {
         epoch_v = -1;
       }
@@ -2642,8 +2642,6 @@ int ObLSTxCtxMgr::move_tx_op(const ObTransferMoveTxParam &move_tx_param,
     weak_read_ts = ls_handle.get_ls()->get_ls_wrs_handler()->get_ls_weak_read_ts();
     if (is_replay) {
       const SCN checkpoint_scn = ls_handle.get_ls()->get_clog_checkpoint_scn();
-      const bool transfer_prepare = ls_handle.get_ls()->get_transfer_status().get_transfer_prepare_enable();
-      if (!transfer_prepare) {
         // recover no this MDS operation so checkpoint is complete
         // replay from middle and incomplete when migrate happen
         if (!move_tx_param.is_incomplete_replay_) {
@@ -2653,7 +2651,6 @@ int ObLSTxCtxMgr::move_tx_op(const ObTransferMoveTxParam &move_tx_param,
           need_check_wrs = false;
           TRANS_LOG(WARN, "move_tx_op replay incomplete", K(ls_id_), K(move_tx_param), K(checkpoint_scn));
         }
-      }
     }
   }
 

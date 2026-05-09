@@ -45,7 +45,6 @@
 #include "sql/monitor/flt/ob_flt_extra_info.h"
 #include "sql/ob_optimizer_trace_impl.h"
 #include "sql/monitor/flt/ob_flt_span_mgr.h"
-#include "share/ob_service_name_proxy.h"
 #include "observer/dbms_scheduler/ob_dbms_sched_job_utils.h"
 #include "sql/plan_cache/ob_plan_cache_util.h"
 
@@ -78,7 +77,6 @@ namespace share
 {
 struct ObSequenceValue;
 }
-using share::ObServiceNameString;
 using common::ObPsStmtId;
 namespace sql
 {
@@ -223,7 +221,7 @@ public:
   // include fetch, compare, and error display.
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
                               const int64_t length, int64_t &pos) = 0;
-  virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess)= 0;
+  virtual int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)= 0;
   virtual int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                                 int64_t current_sess_length, const char *last_sess_buf,
                                 int64_t last_sess_length) = 0;
@@ -240,7 +238,7 @@ public:
   int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos);
   int get_serialize_size(ObSQLSessionInfo& sess, int64_t &length) const;
   int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos);
-  int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
+  int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size);
   int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                         int64_t current_sess_length, const char *last_sess_buf,
                         int64_t last_sess_length);
@@ -256,7 +254,7 @@ public:
   int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos);
   int get_serialize_size(ObSQLSessionInfo& sess, int64_t &length) const;
   int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos);
-  int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
+  int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size);
   int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                         int64_t current_sess_length, const char *last_sess_buf,
                         int64_t last_sess_length);
@@ -286,7 +284,7 @@ public:
   virtual int get_serialize_size(ObSQLSessionInfo& sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
                               const int64_t length, int64_t &pos);
-  virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
+  virtual int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size);
   virtual int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                                 int64_t current_sess_length, const char *last_sess_buf,
                                 int64_t last_sess_length);
@@ -302,7 +300,7 @@ public:
   virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
                               const int64_t length, int64_t &pos);
-  virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
+  virtual int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size);
   virtual int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                                 int64_t current_sess_length, const char *last_sess_buf,
                                 int64_t last_sess_length);
@@ -318,7 +316,7 @@ public:
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
   virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
-  virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess) override;
+  virtual int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size) override;
   virtual int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                                 int64_t current_sess_length, const char *last_sess_buf,
                                 int64_t last_sess_length) override;
@@ -339,7 +337,7 @@ public:
   virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
                               const int64_t length, int64_t &pos);
-  virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
+  virtual int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size);
   virtual int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                                 int64_t current_sess_length, const char *last_sess_buf,
                                 int64_t last_sess_length);
@@ -359,7 +357,7 @@ public:
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
   virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
-  virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess) override;
+  virtual int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size) override;
   virtual int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                                 int64_t current_sess_length, const char *last_sess_buf,
                                 int64_t last_sess_length) override;
@@ -375,7 +373,7 @@ public:
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
   virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
-  virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess) override;
+  virtual int get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size) override;
   virtual int compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
                                 int64_t current_sess_length, const char *last_sess_buf,
                                 int64_t last_sess_length) override;
@@ -681,7 +679,6 @@ public:
                                  hash_area_size_(128*1024*1024),
                                  data_version_(0),
                                  enable_query_response_time_stats_(false),
-                                 enable_user_defined_rewrite_rules_(false),
                                  enable_insertup_replace_gts_opt_(false),
                                  enable_immediate_row_conflict_check_(false),
                                  range_optimizer_max_mem_size_(128*1024*1024),
@@ -712,7 +709,6 @@ public:
     int64_t get_hash_area_size() const { return ATOMIC_LOAD(&hash_area_size_); }
     uint64_t get_data_version() const { return ATOMIC_LOAD(&data_version_); }
     bool enable_query_response_time_stats() const { return enable_query_response_time_stats_; }
-    bool enable_udr() const { return ATOMIC_LOAD(&enable_user_defined_rewrite_rules_); }
     bool enable_insertup_replace_gts_opt() const { return ATOMIC_LOAD(&enable_insertup_replace_gts_opt_); }
     int64_t get_print_sample_ppm() const { return ATOMIC_LOAD(&print_sample_ppm_); }
     bool get_px_join_skew_handling() const { return px_join_skew_handling_; }
@@ -760,7 +756,6 @@ public:
     int64_t hash_area_size_;
     uint64_t data_version_;
     bool enable_query_response_time_stats_;
-    bool enable_user_defined_rewrite_rules_;
     bool enable_insertup_replace_gts_opt_;
     bool enable_immediate_row_conflict_check_;
     int64_t range_optimizer_max_mem_size_;
@@ -1340,11 +1335,6 @@ public:
     cached_tenant_config_info_.refresh();
     return cached_tenant_config_info_.enable_query_response_time_stats();
   }
-  bool enable_udr()
-  {
-    cached_tenant_config_info_.refresh();
-    return cached_tenant_config_info_.enable_udr();
-  }
   bool enable_insertup_replace_gts_opt()
   {
     cached_tenant_config_info_.refresh();
@@ -1476,12 +1466,9 @@ public:
   int64_t get_plsql_exec_time();
   int64_t get_plsql_compile_time() { return plsql_compile_time_; }
   void update_pure_sql_exec_time(int64_t elapsed_time);
-  const ObServiceNameString& get_service_name() const { return service_name_; }
   bool get_failover_mode() const { return failover_mode_; }
   void set_failover_mode(const bool failover_mode) { failover_mode_ = failover_mode; }
-  void reset_service_name() { service_name_.reset(); }
   bool has_ccl_rule() const { return has_ccl_rule_; }
-  int set_service_name(const ObString& service_name);
   int check_service_name_and_failover_mode() const;
   int check_service_name_and_failover_mode(const uint64_t tenant_id) const;
   int64_t get_tx_id_with_thread_data_lock() { 
@@ -1772,12 +1759,14 @@ private:
   share::schema::ObUserLoginInfo login_info_;
   dbms_scheduler::ObDBMSSchedJobInfo *job_info_; // dbms_scheduler related.
   bool failover_mode_;
-  ObServiceNameString service_name_;
   common::ObString audit_filter_name_;
   ObExecutingSqlStatRecord executing_sql_stat_record_;
   uint64_t unit_gc_min_sup_proxy_version_;
   bool has_ccl_rule_;
   int64_t last_update_ccl_cnt_time_;
+#ifdef __ANDROID__
+  int64_t last_ccl_check_schema_version_;
+#endif
 };
 
 

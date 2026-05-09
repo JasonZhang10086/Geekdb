@@ -26,49 +26,6 @@ using namespace common;
 using namespace share;
 namespace sql {
 
-void ObOrcMemPool::init(uint64_t tenant_id)
-{
-  mem_attr_ = ObMemAttr(tenant_id, "OrcMemPool");
-}
-
-char* ObOrcMemPool::malloc(uint64_t size)
-{
-  int ret = OB_SUCCESS;
-  void *buf = ob_malloc_align(64, size, mem_attr_);
-  if (OB_ISNULL(buf)) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("fail to allocate memory", K(size), K(lbt()));
-    throw std::bad_alloc();
-  }
-  return (char*)buf;
-}
-
-void ObOrcMemPool::free(char* p)
-{
-  if (OB_ISNULL(p)) {
-    throw std::bad_exception();
-  }
-  ob_free_align(p);
-}
-
-void ObOrcOutputStream::write(const void *buf, size_t length)
-{
-  int ret = OB_SUCCESS;
-  int64_t write_size = 0;
-  if (IntoFileLocation::SERVER_DISK == file_location_) {
-    if (OB_FAIL(file_appender_->append(buf, length, false))) {
-      LOG_WARN("failed to append file", K(ret), K(length), K(url_.c_str()));
-      throw std::runtime_error("failed to append file");
-    }
-  } else if (OB_FAIL(storage_appender_->append(static_cast<const char*>(buf), length, write_size))) {
-    LOG_WARN("fail to append data", K(ret), KP(buf), K(length), K(url_.c_str()));
-    throw std::runtime_error("fail to append data");
-  }
-  if (OB_SUCC(ret)) {
-    pos_ += length;
-  }
-}
-
 /* ObArrowMemPool */
 void ObArrowMemPool::init(uint64_t tenant_id)
 {
@@ -105,8 +62,8 @@ arrow::Status ObArrowMemPool::Reallocate(int64_t old_size, int64_t new_size, int
   uint8_t* old = *ptr;
   arrow::Status status_ret = Allocate(new_size, alignment, ptr);
   if (arrow::Status::OK() == status_ret) {
-  MEMCPY(*ptr, old, std::min(old_size, new_size));
-  Free(old, old_size, alignment);
+    MEMCPY(*ptr, old, std::min(old_size, new_size));
+    Free(old, old_size, alignment);
   }
   LOG_DEBUG("ObArrowMemPool::Reallocate", K(old_size), K(new_size), "stack", lbt());
   return status_ret;
@@ -115,6 +72,7 @@ arrow::Status ObArrowMemPool::Reallocate(int64_t old_size, int64_t new_size, int
 void ObArrowMemPool::Free(uint8_t* buffer, int64_t size, int64_t alignment) {
   UNUSED(alignment);
   int ret = OB_SUCCESS;
+  UNUSED(alignment);
   ob_free_align(buffer);
   total_hold_size_ -= size;
   LOG_DEBUG("ObArrowMemPool::Free", K(size), "stack", lbt());
@@ -127,16 +85,6 @@ void ObArrowMemPool::ReleaseUnused() {
 int64_t ObArrowMemPool::bytes_allocated() const {
   LOG_DEBUG("ObArrowMemPool::bytes_allocated", "stack", lbt());
   return total_hold_size_;
-}
-
-int64_t ObArrowMemPool::total_bytes_allocated() const {
-  LOG_DEBUG("ObArrowMemPool::total_bytes_allocated", "stack", lbt());
-  return total_alloc_size_;
-}
-
-int64_t ObArrowMemPool::num_allocations() const {
-  LOG_DEBUG("ObArrowMemPool::num_allocations", "stack", lbt());
-  return num_allocations_;
 }
 
 /* ObArrowFile */

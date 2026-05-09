@@ -3,18 +3,31 @@ add_subdirectory(restore)
 
 ob_set_subtarget(oblib_lib_extra ALONE
   timezone/ob_timezone_util.cpp
-  geo/ob_geo_func_difference.cpp
-  geo/ob_geo_func_covered_by.cpp
-  geo/ob_geo_func_within.cpp
-  geo/ob_geo_func_union.cpp
-  geo/ob_geo_func_touches.cpp
-  geo/ob_geo_func_equals.cpp
+  geo/ob_geo_func_difference1.cpp
+  geo/ob_geo_func_difference2.cpp
+  geo/ob_geo_func_difference3.cpp
+  geo/ob_geo_func_covered_by1.cpp
+  geo/ob_geo_func_covered_by2.cpp
+  geo/ob_geo_func_within1.cpp
+  geo/ob_geo_func_within2.cpp
+  geo/ob_geo_func_union1.cpp
+  geo/ob_geo_func_union2.cpp
+  geo/ob_geo_func_touches1.cpp
+  geo/ob_geo_func_touches2.cpp
+  geo/ob_geo_func_touches3.cpp
+  geo/ob_geo_func_equals1.cpp
+  geo/ob_geo_func_equals2.cpp
+  geo/ob_geo_func_equals3.cpp
   geo/ob_geo_func_intersects.cpp
   geo/ob_geo_func_symdifference1.cpp
   geo/ob_geo_func_symdifference2.cpp
+  geo/ob_geo_func_symdifference3.cpp
   geo/ob_geo_func_distance.cpp
-  geo/ob_geo_func_crosses.cpp
-  geo/ob_geo_func_overlaps.cpp
+  geo/ob_geo_func_crosses1.cpp
+  geo/ob_geo_func_crosses2.cpp
+  geo/ob_geo_func_overlaps1.cpp
+  geo/ob_geo_func_overlaps2.cpp
+  geo/ob_geo_func_overlaps3.cpp
   stat/ob_diagnostic_info_util.cpp
 )
 
@@ -180,6 +193,14 @@ if (${ARCHITECTURE} STREQUAL "x86_64")
   target_compile_options(oblib_lib_simd
     PRIVATE -mavx2 -mssse3
     )
+elseif(${ARCHITECTURE} STREQUAL "amd64")
+  target_compile_options(oblib_lib_simd
+    PRIVATE
+    -mavx2
+    -mssse3
+    -msse3
+    -msse4.1
+)
 endif()
 
 ob_set_subtarget(oblib_lib common_mixed
@@ -448,7 +469,7 @@ add_library(ob_malloc STATIC)
 target_link_libraries(ob_malloc ob_malloc_object)
 
 # malloc_hook is only available on Linux (uses Linux-specific syscall and weak alias)
-if(NOT APPLE)
+if(NOT APPLE AND NOT WIN32 AND NOT ANDROID)
   add_library(malloc_hook STATIC
       alloc/malloc_hook.cpp
       alloc/malloc_hook.h
@@ -459,18 +480,48 @@ if(NOT APPLE)
   target_link_libraries(malloc_hook oblib_base)
 endif()
 
-target_link_libraries(oblib_lib
-  PUBLIC ob_malloc compress restore
-  ${DEP_DIR}/lib/libxml2.a
-  ${DEP_DIR}/lib/liblzma.a
-)
+if(WIN32)
+  set(VCPKG_LIB_DIR "${OB_VCPKG_DIR}/lib")
+  target_link_libraries(oblib_lib
+    PUBLIC ob_malloc compress restore oblib_grpc
+    ${VCPKG_LIB_DIR}/libxml2.lib
+  )
+else()
+  target_link_libraries(oblib_lib
+    PUBLIC ob_malloc compress restore oblib_grpc
+    ${DEP_DIR}/lib/libxml2.a
+    ${DEP_DIR}/lib/liblzma.a
+  )
+endif()
 
 if (NOT BUILD_CDC_ONLY)
+if (ANDROID)
+# vsag vector library -- Android: all libs installed to DEP_DIR/lib by ob-deps
+target_link_directories(
+  oblib_lib PUBLIC
+  ${DEP_DIR}/lib
+)
+target_compile_options(oblib_lib PUBLIC -fopenmp)
+target_link_libraries(oblib_lib
+  PUBLIC
+  libvsag_static.a
+  libantlr4-autogen.a
+  libantlr4-runtime.a
+  libdiskann.a
+  libsimd.a
+  libcpuinfo.a
+  libfmt.a
+  libopenblas.a
+  libspdlog.a
+  libroaring.a
+  -fopenmp -static-openmp
+)
+else()
 # vsag vector library
 target_link_directories(
   oblib_lib PUBLIC ${DEP_DIR}/lib ${DEP_DIR}/lib/vsag_lib
 )
-if(NOT APPLE)
+if(UNIX)
   target_compile_options(oblib_lib PUBLIC -fopenmp)
 endif()
 
@@ -529,10 +580,27 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
     libantlr4-autogen.a
     libfmt.a
   )
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
+  target_link_directories(oblib_lib PUBLIC ${OB_VSAG_DIR}/lib)
+  target_include_directories(oblib_lib PUBLIC ${OB_VSAG_DIR}/include)
+  target_link_libraries(oblib_lib
+    PUBLIC
+    cpuinfo.lib
+    simd.lib
+    vsag_static.lib
+    diskann.lib
+    openblas.lib
+    libomp.lib
+    roaring.lib
+    antlr4-runtime-static.lib
+    antlr4-autogen.lib
+    fmt.lib
+  )
 else()
-    message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+  message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
+endif()
 endif()
 
 # ATTENTION: add this cpp file as library only if compiled target doesn't need diagnose. like unittest or cdc.

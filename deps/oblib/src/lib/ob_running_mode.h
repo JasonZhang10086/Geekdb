@@ -26,7 +26,6 @@ extern bool mtl_is_mini_mode();
 
 struct ObRunningModeConfig
 {
-  static const int64_t MIN_MEM;
   static const int64_t MINI_MEM_LOWER;
   static const int64_t MINI_MEM_UPPER;
   static const int64_t MINI_CPU_UPPER;
@@ -83,6 +82,15 @@ inline bool use_ipv6()
 inline void enable_use_ipv6()
 {
   ObRunningModeConfig::instance().use_ipv6_ = true;
+}
+
+inline consteval bool is_embed_mode()
+{
+#ifdef OB_BUILD_EMBED_MODE
+  return true;
+#else
+  return false;
+#endif
 }
 
 } //lib

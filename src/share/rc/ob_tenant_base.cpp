@@ -19,7 +19,6 @@
 #include "share/resource_manager/ob_cgroup_ctrl.h"
 #include "src/share/schema/ob_schema_struct.h"
 #include "observer/omt/ob_tenant_mtl_helper.h"
-#include "share/ob_tenant_info_proxy.h"
 #include "lib/resource/ob_affinity_ctrl.h"
 
 namespace oceanbase
@@ -66,6 +65,21 @@ void __attribute__((used)) lib_mtl_switch(int64_t tenant_id, std::function<void(
   fn(ret);
 }
 
+void __attribute__((used)) lib_mtl_switch(lib::IRunWrapper *run_wrapper, std::function<void()> fn)
+{
+  int ret = OB_SUCCESS;
+  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
+  share::ObTenantBase *tenant_base = nullptr;
+  if (OB_ISNULL(tenant_base = dynamic_cast<share::ObTenantBase *>(run_wrapper))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid run wrapper type", K(ret), KP(run_wrapper));
+  } else if (OB_FAIL(guard.switch_to(tenant_base))) {
+    LOG_WARN("failed to switch to tenant", K(ret), KP(run_wrapper));
+  } else {
+    fn();
+  }
+}
+
 int64_t __attribute__((used)) lib_mtl_cpu_count()
 {
   return share::ObTenantEnv::get_tenant()->unit_max_cpu();
@@ -99,7 +113,7 @@ ObTenantBase::ObTenantBase(const uint64_t id, const int64_t epoch, bool enable_t
     unit_max_cpu_(0),
     unit_min_cpu_(0),
     unit_memory_size_(0),
-    switchover_epoch_(ObAllTenantInfo::INITIAL_SWITCHOVER_EPOCH),
+    switchover_epoch_(0),
     cgroups_(nullptr),
     enable_tenant_ctx_check_(enable_tenant_ctx_check),
     thread_count_(0),
@@ -468,6 +482,19 @@ int ObTenantBase::update_thread_cnt(double tenant_unit_cpu)
   int64_t new_thread_count = ATOMIC_LOAD(&thread_count_);
   LOG_INFO("update_thread_cnt", K(tenant_unit_cpu), K(old_thread_count), K(new_thread_count));
   return ret;
+}
+
+bool ObTenantBase::is_primary_or_invalid_tenant()
+{
+  // Lightweight version: check server_role instead of tenant_role
+  // If the entire cluster is standby, then all tenants are read-only
+  if (GCTX.is_standby_cluster()) {
+    return false;  // Standby returns false, prohibit write operations
+  }
+  // Primary: maintain original logic (compatibility)
+  share::ObTenantRole::Role tenant_role = get_tenant_role();
+  return share::is_primary_tenant(tenant_role)
+         || share::is_invalid_tenant(tenant_role);
 }
 
 void ObTenantEnv::set_tenant(ObTenantBase *ctx)

@@ -161,7 +161,7 @@ class ObDedupQueue : public lib::ThreadPool
 public:
   static const int64_t TOTAL_LIMIT = 1024L * 1024L * 1024L;
   static const int64_t HOLD_LIMIT = 512L * 1024L * 1024L;
-  static const int64_t PAGE_SIZE = common::OB_MALLOC_MIDDLE_BLOCK_SIZE;
+  static const int64_t ALLOC_PAGE_SIZE = common::OB_MALLOC_MIDDLE_BLOCK_SIZE;
   static const int64_t TASK_MAP_SIZE = 20L * 1000;
   static const int64_t TASK_QUEUE_SIZE = 20L * 1000;
 public:
@@ -174,7 +174,7 @@ public:
            const int64_t task_map_size = TASK_MAP_SIZE,
            const int64_t total_mem_limit = TOTAL_LIMIT,
            const int64_t hold_mem_limit = HOLD_LIMIT,
-           const int64_t page_size = PAGE_SIZE,
+           const int64_t page_size = ALLOC_PAGE_SIZE,
            const uint64_t tenant_id = OB_SERVER_TENANT_ID,
            const lib::ObLabel &label = "DedupQueue");
   void destroy();
@@ -200,8 +200,8 @@ private:
   typedef hash::HashMapTypes<const IObDedupTask *, IObDedupTask *>::pair_type TaskMapKVPair;
   static const int32_t DEFAULT_THREAD_NUM = 4;
   static const int32_t MAX_THREAD_NUM = 64;
-  static const int32_t QUEUE_WAIT_TIME_MS = 50; //50ms
-  static const int32_t MAX_QUEUE_WAIT_TIME_MS = 500; //500ms
+  static const int32_t QUEUE_WAIT_TIME_MS = 500; //500ms
+  static const int32_t MAX_QUEUE_WAIT_TIME_MS = 1000; //1s
   static const int64_t GC_BATCH_NUM = 512;
   static const int64_t DEFALT_THREAD_DEAD_THRESHOLD = 30000000L; //30s
   static const int64_t THREAD_CHECK_INTERVAL = 10000000L; //10s

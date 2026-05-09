@@ -1947,29 +1947,6 @@ int ObBackupUtils::check_tenant_data_version_match(const uint64_t tenant_id, con
   return ret;
 }
 
-int ObBackupUtils::get_full_replica_num(const uint64_t tenant_id, int64_t &replica_num)
-{
-  int ret = OB_SUCCESS;
-  replica_num = 0;
-  ObMultiVersionSchemaService *schema_service = nullptr;
-  ObSchemaGetterGuard schema_guard;
-  const ObTenantSchema *tenant_info = nullptr;
-  if (OB_ISNULL(schema_service = GCTX.schema_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("schema service must not be null", K(ret));
-  } else if (OB_FAIL(schema_service->get_tenant_schema_guard(tenant_id, schema_guard))) {
-    LOG_WARN("[DATA_BACKUP]failed to get_tenant_schema_guard", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(schema_guard.get_tenant_info(tenant_id, tenant_info))) {
-    LOG_WARN("[DATA_BACKUP]failed to get tenant info", K(ret), K(tenant_id));
-  } else if (OB_ISNULL(tenant_info)) {
-    ret = OB_TENANT_NOT_EXIST;
-    LOG_WARN("tenant schema is null, tenant may has been dropped", K(ret), K(tenant_id));
-  } else {
-    replica_num = tenant_info->get_full_replica_num();
-  }
-  return ret;
-}
-
 int ObBackupUtils::get_backup_info_default_timeout_ctx(ObTimeoutCtx &ctx)
 {
   int ret = OB_SUCCESS;
@@ -2061,7 +2038,16 @@ int ObBackupUtils::convert_timestamp_to_date(
     struct tm time_info;
     struct tm *time_info_ptr = NULL;
 
+#ifdef _WIN32
+    if (0 != localtime_s(&time_info, &rawtime)) {
+      time_info_ptr = NULL;
+    } else {
+      time_info_ptr = &time_info;
+    }
+    if (NULL == time_info_ptr) {
+#else
     if (NULL == (time_info_ptr = (localtime_r(&rawtime, &time_info)))) {
+#endif
       ret = OB_ERR_SYS;
       LOG_WARN("get localtime failed", K(ret));
     } else if (0 == strftime(buf, MAX_BUF_LENGTH, "%Y%m%d", time_info_ptr)) {
@@ -4305,7 +4291,11 @@ int share::backup_time_to_strftime(const int64_t &ts_s, char *buf,
   int64_t strftime_len = 0;
   time_t t = static_cast<time_t>(ts_s);
 
+#ifdef _WIN32
+  (void) localtime_s(&lt, &t);
+#else
   (void) localtime_r(&t, &lt);
+#endif
   if (OB_FAIL(format.assign("%Y%m%d"))) {
     LOG_WARN("failed to build format string", K(ret), K(concat));
   } else if (OB_FAIL(format.append_fmt("%c", concat))) {

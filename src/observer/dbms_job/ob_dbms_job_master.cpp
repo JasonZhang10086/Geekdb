@@ -17,9 +17,11 @@
 #define USING_LOG_PREFIX RS
 
 #include "ob_dbms_job_master.h"
-
-
-#include "share/ob_all_server_tracer.h"
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace oceanbase
 {
@@ -292,7 +294,11 @@ int ObDBMSJobMaster::stop()
   scheduler_task_.stop();
   stoped_ = true;
   while (running_) {
+#ifdef _WIN32
+    Sleep(1000);
+#else
     sleep(1);
+#endif
   }
   stoped_ = false;
   LOG_INFO("dbms job master stoped", K(ret), K(lbt()));
@@ -478,21 +484,14 @@ int ObDBMSJobMaster::get_all_servers(int64_t tenant_id, ObString &pick_zone, ObI
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < zone_list.count(); ++i) {
       common::ObZone zone = zone_list.at(i);
-      common::ObArray<ObAddr> server_list;
       if (pick_zone.empty()
        || 0 == pick_zone.case_compare(dbms_job::ObDBMSJobInfo::__ALL_SERVER_BC)
        || 0 == pick_zone.case_compare(zone.str())) {
-        if (OB_FAIL(SVR_TRACER.get_alive_servers(zone, server_list))) {
-          LOG_WARN("fail to get zone server list", KR(ret), K(zone));
-        } else {
-          for (int64_t j = 0; OB_SUCC(ret) && j < server_list.count(); j++) {
-            if (common::is_contain(servers, server_list.at(j))) {
-              // do nothing
-            } else if (OB_FAIL(servers.push_back(server_list.at(j)))) {
-              LOG_WARN("fail to push server to total", K(ret));
-            }
-          }
-        }
+         if (common::is_contain(servers, GCTX.self_addr())) {
+           // do nothing
+         } else if (OB_FAIL(servers.push_back(GCTX.self_addr()))) {
+           LOG_WARN("fail to push server to total", K(ret));
+         }
       }
     }
   }
@@ -512,23 +511,18 @@ int ObDBMSJobMaster::server_random_pick(int64_t tenant_id, ObString &pick_zone, 
   }
   if (OB_SUCC(ret)) {
     ObAddr pick;
-    bool is_alive = false, is_active = false;
+    bool is_alive = true, is_active = false;
     int64_t pos = rand_.get(0, total_server.count() - 1);
     int64_t cnt = 0;
     CK (pos >= 0 && pos < total_server.count());
     while (OB_SUCC(ret) && cnt < total_server.count()) {
       pos = (pos + 1) % total_server.count();
       pick = total_server.at(pos);
-      if (OB_FAIL(SVR_TRACER.check_server_alive(pick, is_alive))) {
-        LOG_WARN("fail to check server alive", KR(ret), K(pick));
-      } else if (OB_FAIL(SVR_TRACER.check_server_active(pick, is_active))) {
-        LOG_WARN("fail to check server active", KR(ret), K(pick));
-      } else {
-        if (is_alive && is_active) {
-          break;
-        }
-        cnt++;
+      is_active = GCTX.start_service_time_ > 0;
+      if (is_alive && is_active) {
+        break;
       }
+      cnt++;
     }
     if (OB_FAIL(ret)) {
     } else if (cnt >= total_server.count()) {

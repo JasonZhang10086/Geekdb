@@ -42,7 +42,7 @@ TEST(TestBackupDeviceWrapper, test_alloc_block) {
   char buf[PATH_MAX];
   OK(databuff_printf(test_dir, sizeof(test_dir), "%s/test_backup_device_wrapper_dir", getcwd(buf, sizeof(buf))));
 #else
-  OK(databuff_printf(test_dir, sizeof(test_dir), "%s/test_backup_device_wrapper_dir", get_current_dir_name()));
+  OK(databuff_printf(test_dir, sizeof(test_dir), "%s/test_backup_device_wrapper_dir", getcwd(NULL, 0)));
 #endif
   OK(databuff_printf(test_dir_uri, sizeof(test_dir_uri), "file://%s", test_dir));
   OK(databuff_printf(uri, sizeof(uri), "file://%s/test_file", test_dir));
@@ -68,7 +68,7 @@ TEST(TestBackupDeviceWrapper, test_alloc_block) {
 
   io_d_opts_write.opts_[0].set("storage_info", "");
 
-  const uint64_t test_memory = 6L * 1024L * 1024L * 1024L;
+  const uint64_t test_memory = 6LL * 1024 * 1024 * 1024;
   OK(ObDeviceManager::get_instance().init_devices_env());
   OK(ObIOManager::get_instance().init(test_memory));
 

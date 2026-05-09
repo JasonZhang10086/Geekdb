@@ -29,7 +29,6 @@
 #include "sql/rewrite/ob_transform_rule.h"
 #include "sql/executor/ob_maintain_dependency_info_task.h"
 #include "sql/ob_spi.h"
-#include "sql/udr/ob_udr_item_mgr.h"
 
 namespace test
 {
@@ -39,10 +38,6 @@ class TestOptimizerUtils;
 namespace oceanbase
 {
 
-namespace share
-{
-class ObRsMgr;
-} // end of namespace share
 namespace share
 {
 namespace schema
@@ -76,8 +71,7 @@ public:
   int init(common::ObOptStatManager *opt_stat_mgr,
            rpc::frame::ObReqTransport *transport,
            common::ObITabletScan *vt_partition_service,
-           common::ObAddr &addr,
-           share::ObRsMgr &rs_mgr);
+           common::ObAddr &addr);
   void destroy();
 public:
   /// print statatistics of SQL module
@@ -218,7 +212,6 @@ public:
     opt_stat_mgr_(NULL),
     transport_(NULL),
     vt_partition_service_(NULL),
-    rs_mgr_(NULL),
     execution_id_(0),
     px_sequence_id_(0)
   {
@@ -268,11 +261,6 @@ private:
   int fill_select_result_set(ObResultSet &result_set, ObSqlCtx *context, const PlanCacheMode mode,
                              ObCollationType collation_type, const ObString &type_name,
                              ObStmt &basic_stmt, ObField &field);
-  int pc_add_udr_plan(const ObUDRItemMgr::UDRItemRefGuard &item_guard,
-                      ObPlanCacheCtx &pc_ctx,
-                      ObResultSet &result,
-                      ObOutlineState &outline_state,
-                      bool& plan_added);
   int handle_ps_prepare(const common::ObString &stmt,
                         ObSqlCtx &context,
                         ObResultSet &result,
@@ -500,7 +488,6 @@ private:
   // END global singleton dependency interface
 
   common::ObAddr self_addr_;
-  share::ObRsMgr *rs_mgr_;
   volatile int64_t execution_id_ CACHE_ALIGNED;
   volatile uint64_t px_sequence_id_;
   ObMaintainDepInfoTaskQueue queue_;

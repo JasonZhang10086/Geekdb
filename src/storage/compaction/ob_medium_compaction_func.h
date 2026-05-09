@@ -84,7 +84,6 @@ public:
     storage::ObStorageSchema &storage_schema,
     bool &is_skip_merge_index);
   static int batch_check_medium_finish(
-    const hash::ObHashMap<ObLSID, share::ObLSInfo> &ls_info_map,
     ObIArray<ObTabletCheckInfo> &finish_tablet_ls_infos,
     const ObIArray<ObTabletCheckInfo> &tablet_ls_infos,
     ObCompactionTimeGuard &time_guard);
@@ -144,16 +143,13 @@ protected:
   int submit_medium_clog(ObMediumCompactionInfo &medium_info);
   static int batch_check_medium_meta_table(
       const ObIArray<ObTabletCheckInfo> &tablet_ls_infos,
-      const hash::ObHashMap<ObLSID, share::ObLSInfo> &ls_info_map,
       ObIArray<ObTabletCheckInfo> &finish_tablet_ls,
       ObCompactionTimeGuard &time_guard);
   static int check_medium_meta_table(
       const int64_t medium_snapshot,
       const ObTabletInfo &tablet_info,
       const share::ObTabletReplicaFilterHolder &filters,
-      const hash::ObHashMap<ObLSID, share::ObLSInfo> &ls_info_map,
       bool &merge_finish);
-  static int init_tablet_filters(share::ObTabletReplicaFilterHolder &filters);
   static int check_tablet_checksum(
       const share::ObReplicaCkmArray &checksum_items,
       const int64_t start_idx,
@@ -201,10 +197,10 @@ protected:
     int64_t &schema_version);
   int get_adaptive_reason(const int64_t schedule_major_snapshot);
   int fill_mds_filter_info(ObMediumCompactionInfo &medium_info);
-  static const int64_t DEFAULT_SCHEDULE_MEDIUM_INTERVAL = 60L * 1000L * 1000L; // 60s
+  static const int64_t DEFAULT_SCHEDULE_MEDIUM_INTERVAL = 60LL * 1000LL * 1000LL; // 60s
   static constexpr double SCHEDULE_RANGE_INC_ROW_COUNT_PERCENRAGE_THRESHOLD = 0.2;
-  static const int64_t SCHEDULE_RANGE_ROW_COUNT_THRESHOLD = 1000 * 1000L; // 100w
-  static const int64_t RECYCLE_TRUNCATE_INFO_INTERVAL = 2 * 60 * 1000L * 1000L * 1000L;
+  static const int64_t SCHEDULE_RANGE_ROW_COUNT_THRESHOLD = 1000 * 1000LL; // 100w
+  static const int64_t RECYCLE_TRUNCATE_INFO_INTERVAL = 2LL * 60 * 1000 * 1000 * 1000;
 #ifdef ERRSIM
   int errsim_choose_medium_snapshot(
     const int64_t max_sync_medium_scn,

@@ -235,6 +235,51 @@ int64_t ObHexStringWrap::to_string(char *buf, const int64_t len) const
 
 ////////////////////////////////////////////////////////////////
 template <>
+int64_t to_string<char>(const char &v, char *buffer, const int64_t buffer_size)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buffer, buffer_size, pos, "%c", v))) {
+  } else {}
+  return pos;
+}
+template <>
+int64_t to_string<int8_t>(const int8_t &v, char *buffer, const int64_t buffer_size)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buffer, buffer_size, pos, "%hhd", v))) {
+  } else {}
+  return pos;
+}
+template <>
+int64_t to_string<uint8_t>(const uint8_t &v, char *buffer, const int64_t buffer_size)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buffer, buffer_size, pos, "%hhu", v))) {
+  } else {}
+  return pos;
+}
+template <>
+int64_t to_string<int16_t>(const int16_t &v, char *buffer, const int64_t buffer_size)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buffer, buffer_size, pos, "%hd", v))) {
+  } else {}
+  return pos;
+}
+template <>
+int64_t to_string<uint16_t>(const uint16_t &v, char *buffer, const int64_t buffer_size)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buffer, buffer_size, pos, "%hu", v))) {
+  } else {}
+  return pos;
+}
+template <>
 int64_t to_string<int32_t>(const int32_t &v, char *buffer, const int64_t buffer_size)
 {
   int ret = OB_SUCCESS;
@@ -270,6 +315,26 @@ int64_t to_string<uint64_t>(const uint64_t &v, char *buffer, const int64_t buffe
   } else {}
   return pos;
 }
+#ifdef __APPLE__
+template <>
+int64_t to_string<long>(const long &v, char *buffer, const int64_t buffer_size)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buffer, buffer_size, pos, "%ld", v))) {
+  } else {}
+  return pos;
+}
+template <>
+int64_t to_string<unsigned long>(const unsigned long &v, char *buffer, const int64_t buffer_size)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (OB_FAIL(databuff_printf(buffer, buffer_size, pos, "%lu", v))) {
+  } else {}
+  return pos;
+}
+#endif
 
 template <>
 int64_t to_string<float>(const float &v, char *buffer, const int64_t buffer_size)
@@ -302,29 +367,18 @@ int64_t to_string<bool>(const bool &v, char *buffer, const int64_t buffer_size)
   return pos;
 }
 
-template <>
-const char *to_cstring<const char *>(const char *const &str)
-{
-  return str;
-}
-
-template <>
-const char *to_cstring<int64_t>(const int64_t &v)
-{
-  return to_cstring<int64_t>(v, BoolType<false>());
-}
 ////////////////////////////////////////////////////////////////
 
-const int64_t ObCStringHelperV2::EXPAND_BUF_LEN;
-const int64_t ObCStringHelperV2::HELPER_MEMORY_LIMIT;
+const int64_t ObCStringHelper::EXPAND_BUF_LEN;
+const int64_t ObCStringHelper::HELPER_MEMORY_LIMIT;
 
 ERRSIM_POINT_DEF(EN_CSTRING_HELPER_FORCE_MALLOC);
-bool ObCStringHelperV2::is_force_alloc()
+bool ObCStringHelper::is_force_alloc()
 {
   return EN_CSTRING_HELPER_FORCE_MALLOC;
 }
 
-void ObCStringHelperV2::force_alloc()
+void ObCStringHelper::force_alloc()
 {
   buf_ = reinterpret_cast<char *>(allocator_.alloc(buf_len_));
   if (nullptr == buf_) {
@@ -416,7 +470,42 @@ int databuff_vprintf(char *buf, const int64_t buf_len, int64_t &pos, const char 
 {
   int ret = OB_SUCCESS;
   if (NULL != buf && 0 <= pos && pos < buf_len) {
+#ifdef _WIN32
+    char local_fmt[4096];
+    const char *actual_fmt = fmt;
+    if (NULL != fmt) {
+      const char *src = fmt;
+      char *dst = local_fmt;
+      char *dst_end = local_fmt + sizeof(local_fmt) - 3;
+      while (*src && dst < dst_end) {
+        if (*src == '%') {
+          *dst++ = *src++;
+          if (*src == '%') { *dst++ = *src++; continue; }
+          while (*src == '-' || *src == '+' || *src == ' ' || *src == '#' || *src == '0' || *src == '\'') {
+            if (*src == '\'') { src++; } else { *dst++ = *src++; }
+          }
+          while (*src >= '0' && *src <= '9') { *dst++ = *src++; }
+          if (*src == '.') { *dst++ = *src++; while (*src >= '0' && *src <= '9') { *dst++ = *src++; } }
+          if (*src == 'l' && *(src+1) == 'l') {
+            *dst++ = *src++; *dst++ = *src++;
+          } else if (*src == 'l' && (*(src+1) == 'd' || *(src+1) == 'i' || *(src+1) == 'o' ||
+                     *(src+1) == 'u' || *(src+1) == 'x' || *(src+1) == 'X')) {
+            *dst++ = 'l'; *dst++ = 'l'; src++;
+          } else if (*src == 'l') {
+            *dst++ = *src++;
+          }
+          if (*src) { *dst++ = *src++; }
+        } else {
+          *dst++ = *src++;
+        }
+      }
+      *dst = '\0';
+      actual_fmt = local_fmt;
+    }
+    int len = vsnprintf(buf + pos, buf_len - pos, actual_fmt, args);
+#else
     int len = vsnprintf(buf + pos, buf_len - pos, fmt, args);
+#endif
     if (len < 0) {
       ret = OB_ERR_UNEXPECTED;
     } else if (len < buf_len - pos) {

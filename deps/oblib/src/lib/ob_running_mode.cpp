@@ -19,12 +19,11 @@
 
 namespace oceanbase {
 namespace lib {
-const int64_t ObRunningModeConfig::MIN_MEM = 1L << 30;  // The minimum value for memory_limit.
 const int64_t ObRunningModeConfig::MINI_MEM_LOWER = 1L << 30;
 const int64_t ObRunningModeConfig::MINI_MEM_UPPER = 12L << 30;
 const int64_t ObRunningModeConfig::MINI_CPU_UPPER = 8;
 
-bool __attribute__((weak)) mtl_is_mini_mode() { return false; }
+bool OB_WEAK_SYMBOL mtl_is_mini_mode() { return false; }
 } //end of namespace lib
 } //end of namespace oceanbase
 

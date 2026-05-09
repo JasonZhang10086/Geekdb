@@ -6,10 +6,15 @@ add_library(mock_access_service SHARED
   mock_access_service.cpp)
 target_link_libraries(mock_access_service PUBLIC oceanbase)
 
+# Same as ob_unittest: compile must wait for grpc proto headers (see unittest/CMakeLists.txt).
+add_dependencies(mock_ls_tablet_service oblib_grpc)
+add_dependencies(mock_access_service oblib_grpc)
+
 add_library(truncate_info_helper ob_truncate_info_helper.cpp)
 target_include_directories(truncate_info_helper PUBLIC
   ${CMAKE_SOURCE_DIR}/unittest ${CMAKE_SOURCE_DIR}/mittest)
 target_link_libraries(truncate_info_helper PUBLIC ob_base mockcontainer)
+add_dependencies(truncate_info_helper oblib_grpc)
 
 # add_library(mock_ft_parser SHARED
 #   mock_ft_parser.cpp)
@@ -73,7 +78,6 @@ storage_unittest(test_mvcc_callback memtable/mvcc/test_mvcc_callback.cpp)
 # storage_unittest(test_mds_compile multi_data_source/test_mds_compile.cpp)
 storage_unittest(test_mds_list multi_data_source/test_mds_list.cpp)
 storage_unittest(test_mds_node multi_data_source/test_mds_node.cpp)
-storage_unittest(test_mds_new_ctx_deserialized multi_data_source/test_mds_new_ctx_deserialized.cpp)
 # storage_unittest(test_mds_row multi_data_source/test_mds_row.cpp)
 # storage_unittest(test_mds_unit multi_data_source/test_mds_unit.cpp)
 storage_unittest(test_mds_table multi_data_source/test_mds_table.cpp)
@@ -129,15 +133,13 @@ storage_unittest(test_global_iterator_pool)
 storage_unittest(test_partition_incremental_range_spliter)
 storage_unittest(test_partition_major_sstable_range_spliter)
 storage_unittest(test_parallel_minor_dag)
-storage_dml_unittest(test_partition_range_spliter)
-storage_dml_unittest(test_major_rows_merger)
+#storage_dml_unittest(test_partition_range_splite)
+#storage_dml_unittest(test_major_rows_merger)
 storage_dml_unittest(test_tablet tablet/test_tablet.cpp)
 storage_unittest(test_medium_list_checker compaction/test_medium_list_checker.cpp)
-storage_dml_unittest(test_ls_reserved_snapshot_mgr compaction/test_ls_reserved_snapshot_mgr.cpp)
+#storage_dml_unittest(test_ls_reserved_snapshot_mgr compaction/test_ls_reserved_snapshot_mgr.cpp)
 storage_unittest(test_diagnose_info_mgr compaction/test_diagnose_info_mgr.cpp)
-storage_unittest(test_protected_memtable_mgr_handle test_protected_memtable_mgr_handle.cpp)
 storage_unittest(test_tablet_create_mds_ctx test_tablet_create_mds_ctx.cpp)
-storage_unittest(test_transfer_mds_ctx test_transfer_mds_ctx.cpp)
 
 storage_unittest(test_sstable_log_ts_range_cut test_sstable_log_ts_range_cut.cpp)
 storage_unittest(test_cg_bitmap column_store/test_cg_bitmap.cpp)

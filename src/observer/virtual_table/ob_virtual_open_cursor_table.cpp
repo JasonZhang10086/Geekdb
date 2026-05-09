@@ -188,7 +188,7 @@ int ObVirtualOpenCursorTable::FillScanner::get_session_cursor_sql_text(ObSQLSess
   int ret = OB_SUCCESS;
   int64_t cursor_id = cursor->get_id();
   ObPsStmtId inner_stmt_id = OB_INVALID_ID;
-  if (0 == (cursor_id & (1L << 31))) {
+  if (0 == (cursor_id & (1LL << 31))) {
     if (OB_ISNULL(sess_info.get_ps_cache())) {
       ret = OB_ERR_UNEXPECTED;
       SERVER_LOG(WARN,"ps : ps cache is null.", K(ret), K(cursor_id));
@@ -243,19 +243,6 @@ int ObVirtualOpenCursorTable::FillScanner::fill_cursor_cell(ObSQLSessionInfo &se
   for (int64_t i = 0; OB_SUCC(ret) && i < col_count; ++i) {
     const uint64_t col_id = output_column_ids_.at(i);
     switch (col_id) {
-      case TENANT_ID: {
-        cur_row_->cells_[i].set_int(sess_info.get_priv_tenant_id());
-        break;
-      }
-      case SVR_IP: {
-        cur_row_->cells_[i].set_varchar(ipstr_);
-        cur_row_->cells_[i].set_collation_type(default_collation);
-        break;
-      }
-      case SVR_PORT: {
-        cur_row_->cells_[i].set_int(port_);
-        break;
-      }
       case SADDR: {
         ObSqlString addr;
         ObString tmp_saddr;
@@ -369,19 +356,6 @@ int ObVirtualOpenCursorTable::FillScanner::fill_cur_plan_cell(ObSQLSessionInfo &
   for (int64_t i = 0; OB_SUCC(ret) && i < col_count; ++i) {
     const uint64_t col_id = output_column_ids_.at(i);
     switch (col_id) {
-      case TENANT_ID: {
-        cur_row_->cells_[i].set_int(sess_info.get_priv_tenant_id());
-        break;
-      }
-      case SVR_IP: {
-        cur_row_->cells_[i].set_varchar(ipstr_);
-        cur_row_->cells_[i].set_collation_type(default_collation);
-        break;
-      }
-      case SVR_PORT: {
-        cur_row_->cells_[i].set_int(port_);
-        break;
-      }
       case SADDR: {
         ObSqlString addr;
         ObString tmp_saddr;
@@ -510,7 +484,6 @@ int ObVirtualOpenCursorTable::FillScanner::init(ObIAllocator *allocator,
   }
   return ret;
 }
-
 
 } // namespace observer
 } // namespace oceanbase

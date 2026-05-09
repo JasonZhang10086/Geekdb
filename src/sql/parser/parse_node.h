@@ -96,7 +96,6 @@ enum ParseMode
   TRIGGER_MODE, /* treat ':xxx' as identifier */
   DYNAMIC_SQL_MODE, /*Parse dynamic SQL, :idx and :identifier need to be determined whether to check the placeholder name based on the statement type*/
   DBMS_SQL_MODE,
-  UDR_SQL_MODE,
   INS_MULTI_VALUES,
 };
 
@@ -321,7 +320,6 @@ typedef struct
     uint32_t is_include_old_new_in_trigger_    : 1;
     uint32_t is_normal_ps_prepare_             : 1;
     uint32_t is_multi_values_parser_           : 1;
-    uint32_t is_for_udr_                       : 1;
     uint32_t is_for_remap_                     : 1;
     uint32_t contain_sensitive_data_           : 1;
     uint32_t may_contain_sensitive_data_       : 1;

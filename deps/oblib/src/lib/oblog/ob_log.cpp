@@ -16,9 +16,41 @@
 
 #define USING_LOG_PREFIX LIB
 #include "ob_log.h"
-#include <dirent.h>
+#ifdef _WIN32
+#include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
+#include <regex>
+#include <string>
+#include <io.h>
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#define strtok_r strtok_s
+#define R_OK 4
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+struct ob_iovec {
+    void  *iov_base;
+    size_t iov_len;
+};
+#define iovec ob_iovec
+static inline ssize_t ob_writev(int fd, const struct iovec *iov, int iovcnt) {
+    ssize_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        ssize_t n = _write(fd, iov[i].iov_base, static_cast<unsigned int>(iov[i].iov_len));
+        if (n < 0) return n;
+        total += n;
+    }
+    return total;
+}
+#define writev ob_writev
+#else
 #include <libgen.h>
 #include <regex.h>
+#endif
+#include <dirent.h>
 #include "lib/oblog/ob_warning_buffer.h"
 #include "lib/list/ob_list.h"
 #include "lib/utility/ob_fast_convert.h"
@@ -34,17 +66,16 @@ namespace oceanbase
 {
 namespace common
 {
-void __attribute__((weak)) allow_next_syslog(int64_t)
+void OB_WEAK_SYMBOL allow_next_syslog(int64_t)
 {
   // do nothing
 }
 
-const char* __attribute__((weak)) ob_strerror(const int oberr)
+const char* OB_WEAK_SYMBOL ob_strerror(const int oberr)
 {
   const char* ret = "ob_strerror";
   return ret;
 }
-_RLOCAL(ByteBuf<ObLogger::LOCAL_BUF_SIZE>, ObLogger::local_buf_);
 extern void update_easy_log_level();
 lib::ObRateLimiter *ObLogger::default_log_limiter_ = nullptr;
 _RLOCAL(lib::ObRateLimiter*, ObLogger::tl_log_limiter_);
@@ -57,15 +88,28 @@ _RLOCAL(struct tm, ObLogger::last_localtime_);
 _RLOCAL(bool, ObLogger::disable_logging_);
 _RLOCAL(bool, ObLogger::trace_mode_);
 _RLOCAL(int64_t, ObLogger::limited_left_log_size_);
+
+#ifdef _WIN32
+bool g_ob_log_main_entered = false;
+#endif
+
 static int64_t last_check_file_ts = 0; //last file sample timestamps
 static int64_t last_check_disk_ts = 0; //last disk sample timestamps
 
 const char *ObLogger::PERF_LEVEL = "PERF";
-static const int ERROR_LOG_INIT_MEM = OB_MALLOC_MIDDLE_BLOCK_SIZE;
 // Calculated based on an average of 512 logs, 512K is enough
 static const int64_t MAX_BUFFER_ITEM_CNT = 64 << 10;
 
 static const int64_t POP_COMPENSATED_TIME[5] = {0, 1, 2, 3, 4};//for pop timeout
+
+static ObVSliceAlloc &get_allocator()
+{
+  static ObBlockAllocMgr log_mem_limiter(ObBaseLogWriterCfg::DEFAULT_MAX_BUFFER_ITEM_CNT * OB_MALLOC_BIG_BLOCK_SIZE / 8);
+  static ObVSliceAlloc allocator(
+      SET_USE_500(ObMemAttr(OB_SERVER_TENANT_ID, "Logger", ObCtxIds::LOGGER_CTX_ID, OB_HIGH_ALLOC)),
+      OB_MALLOC_BIG_BLOCK_SIZE, log_mem_limiter, 8);
+  return allocator;
+}
 
 ObPLogFDType get_fd_type(const char *mod_name)
 {
@@ -112,7 +156,42 @@ int logdata_vprintf(char *buf, const int64_t buf_len, int64_t &pos, const char *
 {
   int ret = OB_SUCCESS;
   if (OB_LIKELY(NULL != buf) && OB_LIKELY(0 <= pos && pos < buf_len)) {
+#ifdef _WIN32
+    char local_fmt[4096];
+    const char *actual_fmt = fmt;
+    if (NULL != fmt) {
+      const char *src = fmt;
+      char *dst = local_fmt;
+      char *dst_end = local_fmt + sizeof(local_fmt) - 3;
+      while (*src && dst < dst_end) {
+        if (*src == '%') {
+          *dst++ = *src++;
+          if (*src == '%') { *dst++ = *src++; continue; }
+          while (*src == '-' || *src == '+' || *src == ' ' || *src == '#' || *src == '0' || *src == '\'') {
+            if (*src == '\'') { src++; } else { *dst++ = *src++; }
+          }
+          while (*src >= '0' && *src <= '9') { *dst++ = *src++; }
+          if (*src == '.') { *dst++ = *src++; while (*src >= '0' && *src <= '9') { *dst++ = *src++; } }
+          if (*src == 'l' && *(src+1) == 'l') {
+            *dst++ = *src++; *dst++ = *src++;
+          } else if (*src == 'l' && (*(src+1) == 'd' || *(src+1) == 'i' || *(src+1) == 'o' ||
+                     *(src+1) == 'u' || *(src+1) == 'x' || *(src+1) == 'X')) {
+            *dst++ = 'l'; *dst++ = 'l'; src++;
+          } else if (*src == 'l') {
+            *dst++ = *src++;
+          }
+          if (*src) { *dst++ = *src++; }
+        } else {
+          *dst++ = *src++;
+        }
+      }
+      *dst = '\0';
+      actual_fmt = local_fmt;
+    }
+    int len = vsnprintf(buf + pos, buf_len - pos, actual_fmt, args);
+#else
     int len = vsnprintf(buf + pos, buf_len - pos, fmt, args);
+#endif
     if (OB_UNLIKELY(len < 0)) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_LIKELY(len < buf_len - pos)) {
@@ -476,8 +555,7 @@ ObLogger::ObLogger()
     disable_thread_log_level_(false), force_check_(false), redirect_flag_(false),
     can_print_(true),
     enable_async_log_(true), use_multi_flush_(false), stop_append_log_(false), enable_perf_mode_(false),
-    last_async_flush_count_per_sec_(0), log_mem_limiter_(nullptr),
-    allocator_(nullptr), error_allocator_(nullptr), log_compressor_(nullptr), enable_log_limit_(true),
+    last_async_flush_count_per_sec_(0), log_allocator_(&get_allocator()), log_compressor_(nullptr), enable_log_limit_(true),
     is_arb_replica_(false), new_file_info_(nullptr), info_as_wdiag_(true)
 {
   id_level_map_.set_level(OB_LOG_LEVEL_DBA_ERROR);
@@ -512,19 +590,6 @@ void ObLogger::destroy()
   enable_async_log_ = false;
   enable_log_limit_ = false;
   ObBaseLogWriter::destroy();
-  if (error_allocator_) {
-    error_allocator_->~ObFIFOAllocator();
-    error_allocator_ = nullptr;
-  }
-  if (allocator_) {
-    allocator_->~ObVSliceAlloc();
-    allocator_ = nullptr;
-  }
-  if (log_mem_limiter_) {
-    log_mem_limiter_->~ObBlockAllocMgr();
-    ob_free(log_mem_limiter_);
-    log_mem_limiter_ = nullptr;
-  }
 }
 
 void ObLogger::drop_log_items(ObIBaseLogItem **items, const int64_t item_cnt)
@@ -539,7 +604,16 @@ void ObLogger::drop_log_items(ObIBaseLogItem **items, const int64_t item_cnt)
 void ObLogger::set_trace_mode(bool trace_mode)
 {
   trace_mode_ = trace_mode;
-  get_trace_buffer()->reset();
+  if (trace_mode_) {
+    // do-nothing
+  } else {
+    TraceBuffer *&tb = get_trace_buffer();
+    if (NULL != tb) {
+      tb->~TraceBuffer();
+      ob_free(tb);
+      tb = nullptr;
+    }
+  }
 }
 
 void ObLogger::set_log_level(const char *level, int64_t version)
@@ -591,12 +665,18 @@ void ObLogger::set_file_name(const char *filename,
   }
 }
 
-ObLogger::TraceBuffer *ObLogger::get_trace_buffer()
+ObLogger::TraceBuffer *&ObLogger::get_trace_buffer()
 {
   RLOCAL_INLINE(TraceBuffer*, tb);
-  if (OB_UNLIKELY(NULL == tb)) {
-    STATIC_ASSERT(sizeof(TraceBuffer) <= LOCAL_BUF_SIZE - LOG_ITEM_SIZE, "check sizeof TraceBuffer failed");
-    tb = new (&local_buf_[0] + LOG_ITEM_SIZE) TraceBuffer(); /* LOG_ITEM_SIZE is reserved for ObPlogitem */
+  if (OB_UNLIKELY(NULL == tb && trace_mode_)) {
+    void *buf = nullptr;
+    if (OB_ISNULL(buf = ob_malloc(sizeof(TraceBuffer), "TraceBuffer"))) {
+      int ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_STDERR("alloc failed, ret=%d\n", ret);
+    } else {
+      tb = new (buf) TraceBuffer();
+      tb->reset();
+    }
   }
   return tb;
 }
@@ -1225,7 +1305,11 @@ int ObLogger::get_log_files_in_dir(const char *filename, void *files)
   int ret = OB_SUCCESS;
   char *dirc = NULL;
   char *basec = NULL;
+#ifdef _WIN32
+  std::regex uncompressed_regex;
+#else
   regex_t uncompressed_regex;
+#endif
   if (OB_ISNULL(files)) {
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "Input should not be NULL", K(files), K(ret));
@@ -1238,25 +1322,46 @@ int ObLogger::get_log_files_in_dir(const char *filename, void *files)
   } else if (NULL == (basec = strdup(filename))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     OB_LOG(ERROR, "strdup filename error", K(ret));
-  } else if (OB_FAIL(regcomp(&uncompressed_regex, OB_UNCOMPRESSED_SYSLOG_FILE_PATTERN, REG_EXTENDED))) {
-    OB_LOG(ERROR, "failed to compile regex pattern", K(ret));
   } else {
-    ObIArray<FileName> *files_arr = static_cast<ObIArray<FileName> *>(files);
-    //get dir and base name
+#ifdef _WIN32
+    try {
+      uncompressed_regex.assign(OB_UNCOMPRESSED_SYSLOG_FILE_PATTERN);
+    } catch (...) {
+      ret = OB_ERR_UNEXPECTED;
+      OB_LOG(ERROR, "failed to compile regex pattern", K(ret));
+    }
+    if (OB_FAIL(ret)) {
+    } else {
+    char *dir_name = dirc;
+    char *base_name = basec;
+    char *last_sep = strrchr(dir_name, '/');
+    char *last_bsep = strrchr(dir_name, '\\');
+    if (last_bsep > last_sep) last_sep = last_bsep;
+    if (last_sep) {
+      *last_sep = '\0';
+      base_name = last_sep + 1;
+    } else {
+      dir_name = const_cast<char*>(".");
+      base_name = dirc;
+    }
+#else
+    if (OB_FAIL(regcomp(&uncompressed_regex, OB_UNCOMPRESSED_SYSLOG_FILE_PATTERN, REG_EXTENDED))) {
+      OB_LOG(ERROR, "failed to compile regex pattern", K(ret));
+    } else {
     char *dir_name = dirname(dirc);
     char *base_name = basename(basec);
-    //get file_prefix
+#endif
+    ObIArray<FileName> *files_arr = static_cast<ObIArray<FileName> *>(files);
     char file_prefix[ObPLogFileStruct::MAX_LOG_FILE_NAME_SIZE];
     memset(file_prefix, 0, sizeof(file_prefix));
     (void)snprintf(file_prefix, sizeof(file_prefix), "%s.", base_name);
-    //open dir
     DIR *dir_pointer = opendir(dir_name);
     if (NULL == dir_pointer) {
       ret = OB_ERR_UNEXPECTED;
       OB_LOG(WARN, "Open dir error", KCSTRING(dir_name), K(ret));
     } else {
       FileName tmp_file;
-      struct dirent *dir_entry = NULL;//dir_entry is from dir_pointer stream, need not to be freed.
+      struct dirent *dir_entry = NULL;
       int64_t print_len = 0;
       bool enable_delete_compressed_file = true;
       if (OB_NOT_NULL(log_compressor_) && log_compressor_->is_enable_compress()) {
@@ -1264,23 +1369,31 @@ int ObLogger::get_log_files_in_dir(const char *filename, void *files)
       }
       while (OB_SUCC(ret) && (dir_entry = readdir(dir_pointer)) != NULL) {
         if (DT_DIR != dir_entry->d_type) {
+          bool regex_matched = false;
+#ifdef _WIN32
+          regex_matched = std::regex_match(dir_entry->d_name, uncompressed_regex);
+#else
+          regex_matched = (regexec(&uncompressed_regex, dir_entry->d_name, 0, NULL, 0) == 0);
+#endif
           if (prefix_match(file_prefix, dir_entry->d_name)
-                     && (enable_delete_compressed_file || regexec(&uncompressed_regex, dir_entry->d_name, 0, NULL, 0) == 0)) {
+                     && (enable_delete_compressed_file || regex_matched)) {
             print_len = snprintf(tmp_file.file_name_, ObPLogFileStruct::MAX_LOG_FILE_NAME_SIZE, "%s/%s", dir_name, dir_entry->d_name);
             if (OB_UNLIKELY(print_len <0) || OB_UNLIKELY(print_len >= ObPLogFileStruct::MAX_LOG_FILE_NAME_SIZE)) {
-              //do nothing
             } else if (OB_FAIL(files_arr->push_back(tmp_file))) {
               LOG_WARN("Add file to files error", K(ret));
-            } else { }//do nothing
-          } else { } //do nothing
+            }
+          }
         }
-      }//end of while
+      }
       if (0 != closedir(dir_pointer)) {
         ret = OB_ERR_UNEXPECTED;
         OB_LOG(WARN, "Close dir error", K(ret));
       }
     }
+#ifndef _WIN32
     regfree(&uncompressed_regex);
+#endif
+    }
   }
   if (NULL != dirc) {
     free(dirc);
@@ -1353,42 +1466,20 @@ int ObLogger::init(const ObBaseLogWriterCfg &log_cfg,
                   "observer syslog service init begin.");
 
   static const char *thread_name = "OB_PLOG";
-  void *buf = nullptr;
   if (OB_UNLIKELY(is_inited())) {
     ret = OB_INIT_TWICE;
     LOG_STDERR("ObLogger has inited twice");
   } else if (OB_UNLIKELY(!log_cfg.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_STDERR("log_cfg is not valid");
-  } else if (OB_ISNULL(buf = ob_malloc(sizeof(ObBlockAllocMgr) + sizeof(ObVSliceAlloc) + sizeof(ObFIFOAllocator), "LoggerAlloc"))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_STDERR("alloc failed");
   } else {
-    const int64_t limit = ObBaseLogWriterCfg::DEFAULT_MAX_BUFFER_ITEM_CNT * OB_MALLOC_BIG_BLOCK_SIZE / 8; // 256M
-    log_mem_limiter_ = new (buf) ObBlockAllocMgr(limit);
-    allocator_ = new (log_mem_limiter_ + 1) ObVSliceAlloc();
-    error_allocator_ = new (allocator_ + 1) ObFIFOAllocator();
-    if (OB_FAIL(allocator_->init(OB_MALLOC_BIG_BLOCK_SIZE,
-                                 *log_mem_limiter_,
-                                 SET_USE_500(lib::ObMemAttr(OB_SERVER_TENANT_ID, "Logger",
-                                                common::ObCtxIds::LOGGER_CTX_ID))))) {
-      LOG_STDERR("init fifo error. ret=%d\n", ret);
-    } else if (OB_FAIL(error_allocator_->init(lib::ObMallocAllocator::get_instance(),
-                                              OB_MALLOC_MIDDLE_BLOCK_SIZE,
-                                              SET_USE_500(lib::ObMemAttr(OB_SERVER_TENANT_ID, "ErrorLogger",
-                                                             common::ObCtxIds::LOGGER_CTX_ID)),
-                                              ERROR_LOG_INIT_MEM,
-                                              ERROR_LOG_INIT_MEM,
-                                              limit))) {
-      LOG_STDERR("init error_fifo error. ret=%d\n", ret);
-    }
     if (OB_SUCC(ret)) {
-      allocator_->set_limit(limit);
-      allocator_->set_nway(8);
       if (OB_FAIL(ObBaseLogWriter::init(log_cfg, thread_name))) {
         LOG_STDERR("init ObBaseLogWriter error. ret=%d\n", ret);
-      } else if (OB_FAIL(ObBaseLogWriter::start())) {
-        LOG_STDERR("start ObBaseLogWriter error ret=%d\n", ret);
+      } else {
+        if (OB_FAIL(ObBaseLogWriter::start())) {
+          LOG_STDERR("start ObBaseLogWriter error ret=%d\n", ret);
+        }
       }
       is_arb_replica_ = is_arb_replica;
     }
@@ -1399,21 +1490,6 @@ int ObLogger::init(const ObBaseLogWriterCfg &log_cfg,
                      DBA_STEP_INC_INFO(server_start),
                      "observer syslog service init fail. "
                      "you may find solutions in previous error logs or seek help from official technicians.");
-    if (error_allocator_) {
-      error_allocator_->~ObFIFOAllocator();
-      error_allocator_ = nullptr;
-    }
-    if (allocator_) {
-      allocator_->~ObVSliceAlloc();
-      allocator_ = nullptr;
-    }
-    if (log_mem_limiter_) {
-      log_mem_limiter_->~ObBlockAllocMgr();
-      log_mem_limiter_ = nullptr;
-    }
-    if (buf) {
-      ob_free(buf);
-    }
     destroy();
   } else {
     LOG_DBA_INFO_V2(OB_SERVER_SYSLOG_SERVICE_INIT_SUCCESS,
@@ -1465,10 +1541,23 @@ void ObLogger::flush_logs_to_file(ObPLogItem **log_item, const int64_t count)
     if (log_item[0]->get_timestamp() > (last_check_disk_ts + DISK_SAMPLE_TIME)) {
       last_check_disk_ts = log_item[0]->get_timestamp();
       check_file(log_file_[FD_SVR_FILE], redirect_flag_);
+#ifdef _WIN32
+      ULARGE_INTEGER free_bytes_available;
+      char disk_path[MAX_PATH];
+      snprintf(disk_path, sizeof(disk_path), "%s", log_file_[FD_SVR_FILE].filename_);
+      char *last_sep = strrchr(disk_path, '/');
+      char *last_bsep = strrchr(disk_path, '\\');
+      if (last_bsep > last_sep) last_sep = last_bsep;
+      if (last_sep) *(last_sep + 1) = '\0';
+      if (GetDiskFreeSpaceExA(disk_path, &free_bytes_available, NULL, NULL)) {
+        can_print_ = (static_cast<int64_t>(free_bytes_available.QuadPart) > CAN_PRINT_DISK_SIZE);
+      }
+#else
       struct statfs disk_info;
       if (0 == statfs(log_file_[FD_SVR_FILE].filename_, &disk_info)) {
         can_print_ = ((disk_info.f_bfree * disk_info.f_bsize) > CAN_PRINT_DISK_SIZE);
       }
+#endif
     }
 
     if (can_print_) {
@@ -1592,11 +1681,6 @@ int ObLogger::backtrace_if_needed(ObPLogItem &log_item, const bool force)
       }
     }
     check_log_end(log_item, pos);
-    if (OB_UNLIKELY(OB_SIZE_OVERFLOW == ret)) {
-      //treat it succ
-      log_item.set_size_overflow();
-      ret = OB_SUCCESS;
-    }
   }
   return ret;
 }
@@ -1609,6 +1693,7 @@ int ObLogger::check_tl_log_limiter(const int32_t level,
 {
   int ret = OB_SUCCESS;
   allow = true;
+  return ret;
   if (OB_LIKELY(is_inited())) {
     auto log_limiter = (nullptr != tl_log_limiter_ ? tl_log_limiter_ : default_log_limiter_);
     if (enable_log_limit_) {
@@ -1668,24 +1753,15 @@ int64_t ObLogger::get_wait_us(const int32_t level)
 int ObLogger::alloc_log_item(const int32_t level, const int64_t size, ObPLogItem *&log_item)
 {
   ObDisableDiagnoseGuard disable_diagnose_guard;
-  UNUSED(level);
   int ret = OB_SUCCESS;
   log_item = NULL;
   if (!stop_append_log_) {
     char *buf = nullptr;
-    auto *p_alloc = (level == OB_LOG_LEVEL_ERROR
-                     || level == OB_LOG_LEVEL_DBA_WARN
-                     || level == OB_LOG_LEVEL_DBA_ERROR)
-        ? (ObIAllocator *)error_allocator_
-        : (ObIAllocator *)allocator_;
-    if (OB_UNLIKELY(nullptr == p_alloc)) {
-      ret = OB_NOT_INIT;
-      LOG_STDERR("uninit error, ret=%d, level=%d\n", ret, level);
-    } else if (OB_UNLIKELY(nullptr == (buf = (char*)p_alloc->alloc(size)))) {
+    if (OB_UNLIKELY(nullptr == (buf = (char*)log_allocator_->alloc(size)))) {
       int64_t wait_us = get_wait_us(level);
       const int64_t per_us = MIN(wait_us, 10);
       while (wait_us > 0) {
-        if (nullptr != (buf = (char*)p_alloc->alloc(size))) {
+        if (nullptr != (buf = (char*)log_allocator_->alloc(size))) {
           break;
         } else {
           usleep(per_us);
@@ -1713,15 +1789,8 @@ void ObLogger::free_log_item(ObPLogItem *log_item)
 {
   ObDisableDiagnoseGuard disable_diagnose_guard;
   if (NULL != log_item) {
-    const int level = log_item->get_log_level();
-    auto *p_alloc = (level == OB_LOG_LEVEL_ERROR
-                     || level == OB_LOG_LEVEL_DBA_WARN
-                     || level == OB_LOG_LEVEL_DBA_ERROR)
-        ? (ObIAllocator *)error_allocator_
-        : (ObIAllocator *)allocator_;
-    abort_unless(p_alloc);
     log_item->~ObPLogItem();
-    p_alloc->free(log_item);
+    log_allocator_->free(log_item);
   }
 }
 
@@ -1781,7 +1850,6 @@ void ObLogger::issue_dba_error(const int errcode, const char *file, const int li
                       "Error info:\"", info_str, "\" ",
                       "[suggestion] You can seek help from official technical personnel.");
 }
-
 
 bool ObLogger::need_to_print_dba(const int32_t level, bool force)
 {

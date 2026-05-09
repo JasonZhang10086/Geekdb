@@ -125,10 +125,10 @@ private:
     ObSEArray<TabletLocation*, 16> replicas_;
   };
 private:
-  const char *TABLET_LOCATION_SQL = "SELECT /*+READ_CONSISTENCY(WEAK)*/ A.tablet_id, A.svr_ip, B.svr_port, A.role \
-                                    FROM oceanbase.__all_virtual_proxy_schema A JOIN oceanbase.__all_server B ON A.svr_ip = B.svr_ip AND A.sql_port = B.inner_port \
+  const char *TABLET_LOCATION_SQL = "SELECT /*+READ_CONSISTENCY(WEAK)*/ A.tablet_id, A.role \
+                                    FROM oceanbase.__all_virtual_proxy_schema A \
                                     WHERE A.tablet_id in (%.*s) AND A.tenant_name = '%s' AND A.database_name = '%s' AND A.table_name = '%s' \
-                                    ORDER BY A.role DESC, A.svr_ip, B.svr_port;";
+                                    ORDER BY A.role DESC;";
 private:
   ObString htable_name_;
   ObSEArray<const schema::ObSimpleTableSchemaV2*, 3> table_schemas_;
@@ -140,7 +140,7 @@ private:
 class ObHTableRegionMetricsHandler : public ObITableMetaHandler
 {
 private:
-  static const uint64_t MOCK_SS_TABLET_SIZE = 8L * 1073741824; // 8 GB
+  static const uint64_t MOCK_SS_TABLET_SIZE = 8ULL * 1024ULL * 1024ULL * 1024ULL; // 8 GB
 public:
   ObHTableRegionMetricsHandler(ObIAllocator &allocator)
     : htable_name_(),

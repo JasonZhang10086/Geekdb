@@ -1375,8 +1375,9 @@ int ObDbmsStats::export_table_stats(ObExecContext &ctx, ParamStore &params, ObOb
       ret = OB_TABLE_NOT_EXIST;
       LOG_WARN("table schema is null", K(ret), K(table_schema), K(stat_table_param.db_name_),
                                        K(stat_table_param.tab_name_));
-      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(stat_table_param.db_name_),
-                                        to_cstring(stat_table_param.tab_name_));
+      ObCStringHelper helper;
+      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(stat_table_param.db_name_),
+                                         helper.convert(stat_table_param.tab_name_));
     } else if (!params.at(4).is_null() && OB_FAIL(params.at(4).get_varchar(stat_param.stat_id_))) {
       LOG_WARN("failed to get stat id", K(ret));
     } else if (!params.at(5).is_null() && OB_FAIL(params.at(5).get_bool(stat_param.cascade_))) {
@@ -1457,8 +1458,9 @@ int ObDbmsStats::export_column_stats(sql::ObExecContext &ctx,
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema is null", K(ret), K(table_schema),
                                      K(stat_table_param.db_name_), K(stat_table_param.tab_name_));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(stat_table_param.db_name_),
-                                       to_cstring(stat_table_param.tab_name_));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(stat_table_param.db_name_),
+                                       helper.convert(stat_table_param.tab_name_));
   } else if (!params.at(5).is_null() && OB_FAIL(params.at(5).get_varchar((stat_param.stat_id_)))) {
     LOG_WARN("failed to get stat id ", K(ret));
   } else {
@@ -1517,8 +1519,9 @@ int ObDbmsStats::export_schema_stats(ObExecContext &ctx, ParamStore &params, ObO
       ret = OB_TABLE_NOT_EXIST;
       LOG_WARN("table schema is null", K(ret), K(table_schema),
                                       K(stat_table_param.db_name_), K(stat_table_param.tab_name_));
-      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(stat_table_param.db_name_),
-                                        to_cstring(stat_table_param.tab_name_));
+      ObCStringHelper helper;
+      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(stat_table_param.db_name_),
+                                        helper.convert(stat_table_param.tab_name_));
     } else if (!params.at(2).is_null() && OB_FAIL(params.at(2).get_varchar((stat_table_param.stat_id_)))) {
       LOG_WARN("failed to get stat id ", K(ret));
     } else {
@@ -1607,8 +1610,9 @@ int ObDbmsStats::export_index_stats(ObExecContext &ctx, ParamStore &params, ObOb
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema is null", K(ret), K(table_schema), K(stat_table_param.db_name_),
                                      K(stat_table_param.tab_name_));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(stat_table_param.db_name_),
-                                       to_cstring(stat_table_param.tab_name_));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(stat_table_param.db_name_),
+                                       helper.convert(stat_table_param.tab_name_));
   } else if (!params.at(4).is_null() && OB_FAIL(params.at(4).get_varchar(index_stat_param.stat_id_))) {
     LOG_WARN("failed to get stat id", K(ret));
   } else {
@@ -1710,8 +1714,9 @@ int ObDbmsStats::import_table_stats(ObExecContext &ctx, ParamStore &params, ObOb
       ret = OB_TABLE_NOT_EXIST;
       LOG_WARN("table schema is null", K(ret), K(table_schema), K(stat_table_param.db_name_),
                                       K(stat_table_param.tab_name_));
-      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(stat_table_param.db_name_),
-                                        to_cstring(stat_table_param.tab_name_));
+      ObCStringHelper helper;
+      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(stat_table_param.db_name_),
+                                         helper.convert(stat_table_param.tab_name_));
     } else if (!params.at(4).is_null() && OB_FAIL(params.at(4).get_varchar(stat_param.stat_id_))) {
       LOG_WARN("failed to get stat id ", K(ret));
     } else if (!params.at(5).is_null() && OB_FAIL(params.at(5).get_bool(stat_param.cascade_))) {
@@ -1811,8 +1816,9 @@ int ObDbmsStats::import_column_stats(sql::ObExecContext &ctx,
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema is null", K(ret), K(table_schema),
                                      K(stat_table_param.db_name_), K(stat_table_param.tab_name_));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(stat_table_param.db_name_),
-                                       to_cstring(stat_table_param.tab_name_));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(stat_table_param.db_name_),
+                                       helper.convert(stat_table_param.tab_name_));
   } else if (!params.at(5).is_null() && OB_FAIL(params.at(5).get_varchar(stat_param.stat_id_))) {
     LOG_WARN("failed to get stat id ", K(ret));
   } else if (!params.at(7).is_null() && OB_FAIL(params.at(7).get_bool(stat_param.no_invalidate_))) {
@@ -1882,8 +1888,9 @@ int ObDbmsStats::import_schema_stats(ObExecContext &ctx, ParamStore &params, ObO
       ret = OB_TABLE_NOT_EXIST;
       LOG_WARN("table schema is null", K(ret), K(table_schema), K(stat_table_param.db_name_),
                                       K(stat_table_param.tab_name_));
-      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(stat_table_param.db_name_),
-                                        to_cstring(stat_table_param.tab_name_));
+      ObCStringHelper helper;
+      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(stat_table_param.db_name_),
+                                        helper.convert(stat_table_param.tab_name_));
     } else if (!params.at(2).is_null() && OB_FAIL(params.at(2).get_varchar(stat_table_param.stat_id_))) {
       LOG_WARN("failed to get stat id ", K(ret));
     } else {
@@ -1995,8 +2002,9 @@ int ObDbmsStats::import_index_stats(ObExecContext &ctx, ParamStore &params, ObOb
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema is null", K(ret), K(table_schema), K(stat_table_param.db_name_),
                                      K(stat_table_param.tab_name_));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(stat_table_param.db_name_),
-                                       to_cstring(stat_table_param.tab_name_));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(stat_table_param.db_name_),
+                                       helper.convert(stat_table_param.tab_name_));
   } else if (!params.at(4).is_null() && OB_FAIL(params.at(4).get_varchar(index_stat_param.stat_id_))) {
     LOG_WARN("failed to get stat id ", K(ret));
   } else if (!params.at(6).is_null() && OB_FAIL(params.at(6).get_bool(index_stat_param.no_invalidate_))) {
@@ -3355,53 +3363,38 @@ int ObDbmsStats::update_stat_cache(const uint64_t tenant_id,
 {
   int ret = OB_SUCCESS;
   LOG_TRACE("update stat cache", K(stat_arg));
-  bool evict_plan_failed = false;
   int64_t timeout = -1;
-  ObSEArray<ObServerLocality, 4> all_server_arr;
-  bool has_read_only_zone = false; // UNUSED;
-  if (OB_ISNULL(GCTX.srv_rpc_proxy_) || OB_ISNULL(GCTX.locality_manager_)) {
+  if (OB_ISNULL(GCTX.srv_rpc_proxy_)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("rpc_proxy or session is null", K(ret), K(GCTX.srv_rpc_proxy_), K(GCTX.locality_manager_));
-  } else if (OB_FAIL(GCTX.locality_manager_->get_server_locality_array(all_server_arr,
-                                                                       has_read_only_zone))) {
-    LOG_WARN("fail to get server locality", K(ret));
+    LOG_WARN("rpc_proxy or session is null", K(ret), K(GCTX.srv_rpc_proxy_));
   } else {
-    ObSEArray<ObServerLocality, 4> failed_server_arr;
-    for (int64_t i = 0; OB_SUCC(ret) && i < all_server_arr.count(); i++) {
-      timeout = std::min(MAX_OPT_STATS_PROCESS_RPC_TIMEOUT, THIS_WORKER.get_timeout_remain());
-      if (!all_server_arr.at(i).is_active()
-          || ObServerStatus::OB_SERVER_ACTIVE != all_server_arr.at(i).get_server_status()
-          || 0 == all_server_arr.at(i).get_start_service_time()
-          || 0 != all_server_arr.at(i).get_server_stop_time()) {
+    int64_t failed_count = 0;
+    timeout = std::min(MAX_OPT_STATS_PROCESS_RPC_TIMEOUT, THIS_WORKER.get_timeout_remain());
+    if (0 >= GCTX.start_service_time_) {
       //server may not serving
-      } else if (0 >=(timeout)) {
-        ret = OB_TIMEOUT;
-        LOG_WARN("query timeout is reached", K(ret), K(timeout));
-      } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(all_server_arr.at(i).get_addr())
-                                                .timeout(timeout)
-                                                .by(tenant_id)
-                                                .update_local_stat_cache(stat_arg))) {
-        LOG_WARN("failed to update local stat cache caused by unknow error",
-                                          K(ret), K(all_server_arr.at(i).get_addr()), K(stat_arg));
-        if (OB_FAIL(failed_server_arr.push_back(all_server_arr.at(i)))) {
-          LOG_WARN("failed to push back", K(ret));
-        }
-      }
+    } else if (0 >=(timeout)) {
+      ret = OB_TIMEOUT;
+      LOG_WARN("query timeout is reached", K(ret), K(timeout));
+    } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(GCTX.self_addr())
+                                              .timeout(timeout)
+                                              .by(tenant_id)
+                                              .update_local_stat_cache(stat_arg))) {
+      LOG_WARN("failed to update local stat cache caused by unknow error",
+                                        K(ret), K(stat_arg));
+      ret = OB_SUCCESS;
+      failed_count = 1;
     }
-    LOG_TRACE("update stat cache", K(stat_arg), K(failed_server_arr), K(all_server_arr));
-    if (OB_SUCC(ret) && !failed_server_arr.empty() && running_monitor != NULL) {
+    LOG_TRACE("update stat cache", K(stat_arg), K(failed_count));
+    if (OB_SUCC(ret) && 1 == failed_count && running_monitor != NULL) {
       ObSqlString tmp_str;
       char *buf = NULL;
-      if (failed_server_arr.count() * (common::MAX_IP_PORT_LENGTH + 1) <= common::MAX_VALUE_LENGTH) {
-        for (int64_t i = 0; OB_SUCC(ret) && i < failed_server_arr.count(); ++i) {
+      if ((common::MAX_IP_PORT_LENGTH + 1) <= common::MAX_VALUE_LENGTH) {
           char svr_buf[common::MAX_IP_PORT_LENGTH] = {0};
-          failed_server_arr.at(i).get_addr().to_string(svr_buf, common::MAX_IP_PORT_LENGTH);
-          if (OB_FAIL(tmp_str.append_fmt("%s%s", svr_buf, i == 0 ? "" : ","))) {
+          GCTX.self_addr().to_string(svr_buf, common::MAX_IP_PORT_LENGTH);
+          if (OB_FAIL(tmp_str.append_fmt("%s%s", svr_buf, ""))) {
             LOG_WARN("failed to append fmt", K(ret));
           }
-        }
-      } else if (OB_FAIL(tmp_str.append_fmt("more than %ld servers refresh stat cache failed",
-                                            failed_server_arr.count()))) {
+      } else if (OB_FAIL(tmp_str.append_fmt("more than 1 servers refresh stat cache failed"))) {
         LOG_WARN("failed to append fmt", K(ret));
       }
       if (OB_FAIL(ret)) {
@@ -3450,7 +3443,8 @@ int ObDbmsStats::parse_table_part_info(ObExecContext &ctx,
   } else if (OB_ISNULL(table_schema) || OB_UNLIKELY(table_schema->is_view_table())) {
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema is null", K(ret), K(table_schema), K(param.db_name_), K(param.tab_name_));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(param.db_name_), to_cstring(param.tab_name_));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(param.db_name_), helper.convert(param.tab_name_));
   } else if (OB_FAIL(get_table_part_infos(table_schema,
                                           *param.allocator_,
                                           param.part_infos_,
@@ -3789,7 +3783,8 @@ int ObDbmsStats::parse_set_table_info(ObExecContext &ctx,
   } else if (OB_ISNULL(table_schema) || OB_UNLIKELY(table_schema->is_view_table())) {
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema is null", K(ret), K(table_schema), K(param.db_name_), K(param.tab_name_));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(param.db_name_), to_cstring(param.tab_name_));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(param.db_name_), helper.convert(param.tab_name_));
   } else if (OB_FAIL(parse_set_partition_name(ctx, table_schema, part_name, param))) {
     LOG_WARN("failed to parser part info", K(ret));
   } else if (OB_FAIL(init_column_stat_params(*param.allocator_,
@@ -3828,7 +3823,8 @@ int ObDbmsStats::parse_set_column_stats(ObExecContext &ctx,
   } else if (OB_ISNULL(table_schema) || OB_UNLIKELY(table_schema->is_view_table())) {
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema is null", K(ret), K(table_schema), K(param.db_name_), K(param.tab_name_));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(param.db_name_), to_cstring(param.tab_name_));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(param.db_name_), helper.convert(param.tab_name_));
   } else if (OB_FAIL(colname.get_string(column_name))) {
     LOG_WARN("failed to get column name", K(ret));
   } else if (OB_FAIL(convert_vaild_ident_name(*param.allocator_,
@@ -4138,8 +4134,9 @@ int ObDbmsStats::parse_index_table_info(ObExecContext &ctx,
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema is null", K(ret), K(table_schema), K(data_table_param.db_name_),
                                      K(data_table_param.tab_name_));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(data_table_param.db_name_),
-                                       to_cstring(data_table_param.tab_name_));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(data_table_param.db_name_),
+                                       helper.convert(data_table_param.tab_name_));
   } else if (OB_FAIL(idx_name.get_string(index_name))) {
     LOG_WARN("failed to get string", K(ret), K(idx_name));
   } else if (OB_FAIL(convert_vaild_ident_name(*param.allocator_,
@@ -4158,8 +4155,9 @@ int ObDbmsStats::parse_index_table_info(ObExecContext &ctx,
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("index schema is null", K(ret), K(index_schema), K(data_table_param.db_name_),
                                     K(index_name));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(data_table_param.db_name_),
-                                      to_cstring(index_name));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(data_table_param.db_name_),
+                                      helper.convert(index_name));
   } else if (!index_schema->is_normal_index() && !index_schema->is_unique_index()) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("not support index tpye", K(ret), K(index_schema->get_index_type()));
@@ -6509,7 +6507,8 @@ int ObDbmsStats::get_index_schema(sql::ObExecContext &ctx,
     if (!found_it) {
       ret = OB_TABLE_NOT_EXIST;
       LOG_WARN("index schema is null", K(ret), K(index_schema), K(index_name));
-      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(index_name), to_cstring(index_name));
+      ObCStringHelper helper;
+      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(index_name), helper.convert(index_name));
     }
   }
   } // smart var
@@ -6927,38 +6926,24 @@ int ObDbmsStats::update_system_stats_cache(const uint64_t rpc_tenant_id,
   stat_arg.tenant_id_ = tenant_id;
   stat_arg.update_system_stats_only_ = true;
   int64_t timeout = -1;
-  bool has_read_only_zone = false; // UNUSED;
-  ObSEArray<ObServerLocality, 4> all_server_arr;
-  ObSEArray<ObServerLocality, 4> failed_server_arr;
   LOG_TRACE("update system stat cache", K(stat_arg));
-  if (OB_ISNULL(GCTX.srv_rpc_proxy_) || OB_ISNULL(GCTX.locality_manager_)) {
+  if (OB_ISNULL(GCTX.srv_rpc_proxy_)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("rpc_proxy or session is null", K(ret), K(GCTX.srv_rpc_proxy_), K(GCTX.locality_manager_));
-  } else if (OB_FAIL(GCTX.locality_manager_->get_server_locality_array(all_server_arr,
-                                                                        has_read_only_zone))) {
-    LOG_WARN("fail to get server locality", K(ret));
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && i < all_server_arr.count(); i++) {
-    if (!all_server_arr.at(i).is_active()
-        || ObServerStatus::OB_SERVER_ACTIVE != all_server_arr.at(i).get_server_status()
-        || 0 == all_server_arr.at(i).get_start_service_time()
-        || 0 != all_server_arr.at(i).get_server_stop_time()) {
+    LOG_WARN("rpc_proxy or session is null", K(ret), K(GCTX.srv_rpc_proxy_));
+  } else if (0 >= GCTX.start_service_time_) {
     //server may not serving
-    } else if (0 >= (timeout = THIS_WORKER.get_timeout_remain())) {
-      ret = OB_TIMEOUT;
-      LOG_WARN("query timeout is reached", K(ret), K(timeout));
-    } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(all_server_arr.at(i).get_addr())
-                                              .timeout(timeout)
-                                              .by(rpc_tenant_id)
-                                              .update_local_stat_cache(stat_arg))) {
-      LOG_WARN("failed to update local stat cache caused by unknow error",
-                                        K(ret), K(all_server_arr.at(i).get_addr()), K(stat_arg));
-      if (OB_FAIL(failed_server_arr.push_back(all_server_arr.at(i)))) {
-        LOG_WARN("failed to push back", K(ret));
-      }
-    }
+  } else if (0 >= (timeout = THIS_WORKER.get_timeout_remain())) {
+    ret = OB_TIMEOUT;
+    LOG_WARN("query timeout is reached", K(ret), K(timeout));
+  } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(GCTX.self_addr())
+                                            .timeout(timeout)
+                                            .by(rpc_tenant_id)
+                                            .update_local_stat_cache(stat_arg))) {
+    LOG_WARN("failed to update local stat cache caused by unknow error",
+                                      K(ret), K(stat_arg));
+    ret = OB_SUCCESS; // ignore ret
   }
-  LOG_TRACE("update stat cache", K(stat_arg), K(failed_server_arr), K(all_server_arr));
+  LOG_TRACE("update stat cache", K(stat_arg));
   return ret;
 }
 

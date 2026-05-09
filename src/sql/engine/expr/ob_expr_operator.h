@@ -1653,9 +1653,11 @@ public:
   virtual int assign(const ObExprOperator &other);
   OB_INLINE static bool is_float_out_of_range(float res)
   {
-#ifdef __APPLE__
-    // macOS doesn't have isinff, use std::isinf instead
+#if defined(__APPLE__) || defined(__ANDROID__)
+    // macOS/Android don't have isinff, use std::isinf instead
     return std::isinf(res);
+#elif _WIN32
+    return (0 != std::isinf(res));
 #else
     return (0 != isinff(res));
 #endif

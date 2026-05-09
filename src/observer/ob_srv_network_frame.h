@@ -24,7 +24,6 @@
 #include "observer/ob_srv_deliver.h"
 #include "observer/ob_server_struct.h"
 #include "observer/net/ob_ingress_bw_alloc_service.h"
-#include "observer/net/ob_shared_storage_net_throt_service.h"
 
 namespace oceanbase {
 namespace rpc {
@@ -63,12 +62,7 @@ public:
   rpc::frame::ObReqTransport *get_batch_rpc_req_transport();
   inline rpc::frame::ObReqTranslator &get_xlator();
   int reload_sql_thread_config();
-  int reload_tenant_sql_thread_config(const uint64_t tenant_id);
 
-  int reload_mysql_login_thread_config() {
-    int cnt = deliver_.get_mysql_login_thread_count_to_set(static_cast<int32_t>(GCONF.sql_login_thread_count));
-    return deliver_.set_mysql_login_thread_count(cnt);
-  }
   static int reload_rpc_auth_method();
 
   rootserver::ObIngressBWAllocService *get_ingress_service();
@@ -76,14 +70,9 @@ public:
   int net_endpoint_predict_ingress(const ObNetEndpointKey &endpoint_key, int64_t &predicted_bw);
   int net_endpoint_set_ingress(const ObNetEndpointKey &endpoint_key, int64_t assigned_bw);
   // share storage net throt
-  rootserver::ObSSNTAllocService *get_SSNT_service();
-  int shared_storage_net_throt_register(const obrpc::ObSSNTEndpointArg &endpoint_storage_infos);
-  int shared_storage_net_throt_predict(
-      const obrpc::ObSSNTEndpointArg &endpoint_storage_infos, ObSharedDeviceResourceArray &predicted_resource);
   int shared_storage_net_throt_set(const ObSharedDeviceResourceArray &assigned_resource);
 
 private:
-  uint64_t get_root_certificate_table_hash();
   ObGlobalContext &gctx_;
 
   ObSrvXlator xlator_;
@@ -92,7 +81,6 @@ private:
   // generic deliver
   ObSrvDeliver deliver_;
   rootserver::ObIngressBWAllocService ingress_service_;
-  rootserver::ObSSNTAllocService SSNT_service_;
 
   rpc::frame::ObReqTransport *rpc_transport_;
   rpc::frame::ObReqTransport *high_prio_rpc_transport_;

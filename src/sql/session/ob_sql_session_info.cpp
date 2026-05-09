@@ -24,7 +24,6 @@
 #include "sql/plan_cache/ob_ps_cache.h"
 #include "share/stat/ob_opt_stat_manager.h" // for ObOptStatManager
 #include "ob_sess_info_verify.h"
-#include "rootserver/ob_tenant_info_loader.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -164,11 +163,13 @@ ObSQLSessionInfo::ObSQLSessionInfo(const uint64_t tenant_id) :
       is_session_sync_support_(false),
       job_info_(nullptr),
       failover_mode_(false),
-      service_name_(),
       executing_sql_stat_record_(),
       unit_gc_min_sup_proxy_version_(0),
       has_ccl_rule_(false),
       last_update_ccl_cnt_time_(-1)
+#ifdef __ANDROID__
+      , last_ccl_check_schema_version_(common::OB_INVALID_VERSION)
+#endif
 {
   MEMSET(tenant_buff_, 0, sizeof(share::ObTenantSpaceFetcher));
   MEMSET(vip_buf_, 0, sizeof(vip_buf_));
@@ -356,7 +357,6 @@ void ObSQLSessionInfo::reset(bool skip_sys_var)
   need_send_feedback_proxy_info_ = false;
   is_lock_session_ = false;
   failover_mode_ = false;
-  service_name_.reset();
   executing_sql_stat_record_.reset();
   unit_gc_min_sup_proxy_version_ = 0;
 }
@@ -600,9 +600,23 @@ int ObSQLSessionInfo::has_ccl_rules(share::schema::ObSchemaGetterGuard *&schema_
 {
   int ret = OB_SUCCESS;
   int64_t cur_time = ObTimeUtility::current_time();
-  if (last_update_ccl_cnt_time_ == -1 || cur_time - last_update_ccl_cnt_time_ > 5 * 1000 * 1000LL) {
+#ifdef __ANDROID__
+  // On Android the 5s cache may hide newly committed CCL rules; re-check on schema version change.
+  int64_t cur_schema_ver = OB_INVALID_VERSION;
+  (void)schema_guard->get_schema_version(get_effective_tenant_id(), cur_schema_ver);
+  bool need_refresh = (last_update_ccl_cnt_time_ == -1
+                       || cur_time - last_update_ccl_cnt_time_ > 5 * 1000 * 1000LL
+                       || cur_schema_ver != last_ccl_check_schema_version_);
+#else
+  bool need_refresh = (last_update_ccl_cnt_time_ == -1
+                       || cur_time - last_update_ccl_cnt_time_ > 5 * 1000 * 1000LL);
+#endif
+  if (need_refresh) {
     uint64_t ccl_cnt = 0;
     last_update_ccl_cnt_time_ = cur_time;
+#ifdef __ANDROID__
+    last_ccl_check_schema_version_ = cur_schema_ver;
+#endif
     if (OB_FAIL(schema_guard->get_ccl_rule_count(get_effective_tenant_id(), ccl_cnt))) {
       LOG_WARN("fail to get ccl rule count", K(ret));
     }
@@ -816,7 +830,7 @@ int ObSQLSessionInfo::drop_temp_tables(const bool is_disconn,
 void ObSQLSessionInfo::refresh_temp_tables_sess_active_time()
 {
   int ret = OB_SUCCESS;
-  const int64_t REFRESH_INTERVAL = 60L * 60L * 1000L * 1000L; // 1hr
+  const int64_t REFRESH_INTERVAL = 60LL * 60 * 1000 * 1000; // 1hr
   obrpc::ObCommonRpcProxy *common_rpc_proxy = NULL;
   if (get_has_temp_table_flag() && is_obproxy_mode()) {
     int64_t now = ObTimeUtility::current_time();
@@ -2533,7 +2547,6 @@ void ObSQLSessionInfo::ObCachedTenantConfigInfo::refresh()
       ATOMIC_STORE(&sort_area_size_, tenant_config->_sort_area_size);
       ATOMIC_STORE(&hash_area_size_, tenant_config->_hash_area_size);
       ATOMIC_STORE(&enable_query_response_time_stats_, tenant_config->query_response_time_stats);
-      ATOMIC_STORE(&enable_user_defined_rewrite_rules_, tenant_config->enable_user_defined_rewrite_rules);
       ATOMIC_STORE(&enable_insertup_replace_gts_opt_, tenant_config->_enable_insertup_replace_gts_opt);
       ATOMIC_STORE(&enable_immediate_row_conflict_check_, tenant_config->_ob_immediate_row_conflict_check);
       ATOMIC_STORE(&range_optimizer_max_mem_size_, tenant_config->range_optimizer_max_mem_size);
@@ -2906,9 +2919,10 @@ int ObErrorSyncSysVarEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
   return ret;
 }
 
-int64_t ObErrorSyncSysVarEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess)
+int ObErrorSyncSysVarEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)
 {
-  int64_t size = 0;
+  int ret = OB_SUCCESS;
+  size = 0;
   for (int64_t j = 0; j< share::ObSysVarFactory::ALL_SYS_VARS_COUNT; ++j) {
     if (ObSysVariables::get_sys_var_id(j) == SYS_VAR_OB_LAST_SCHEMA_VERSION) {
       // need sync sys var
@@ -2917,7 +2931,7 @@ int64_t ObErrorSyncSysVarEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& ses
       // do nothing.
     }
   }
-  return size;
+  return ret;
 }
 
 int ObErrorSyncSysVarEncoder::compare_sess_info(ObSQLSessionInfo &sess,
@@ -3041,9 +3055,12 @@ int ObSysVarEncoder::get_serialize_size(ObSQLSessionInfo& sess, int64_t &len) co
 int ObSysVarEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos)
 {
   int ret = OB_SUCCESS;
+  ObString sys_var_in_pc_str;
   if (OB_FAIL(sess.get_sys_var_cache_inc_data().serialize(buf, length, pos))) {
     LOG_WARN("failed to serialize", K(length), K(ret));
-  } else if (OB_FAIL(sess.get_sys_var_in_pc_str().serialize(buf, length, pos))) {
+  } else if (OB_FAIL(sess.get_sys_var_in_pc_str(sys_var_in_pc_str))) {
+    LOG_WARN("fail to get sys var in pc str", K(ret));
+  } else if (OB_FAIL(sys_var_in_pc_str.serialize(buf, length, pos))) {
     LOG_WARN("failed to serialize", K(ret), K(length), K(pos));
   } else {
     for (int64_t j = 0; OB_SUCC(ret) && j< share::ObSysVarFactory::ALL_SYS_VARS_COUNT; ++j) {
@@ -3067,27 +3084,33 @@ int ObSysVarEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const in
   return ret;
 }
 
-int64_t ObSysVarEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess)
+int ObSysVarEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)
 {
-  int64_t size = 0;
+  int ret = OB_SUCCESS;
+  size = 0;
+  ObString sys_var_in_pc_str;
   size = sess.get_sys_var_cache_inc_data().get_serialize_size();
-  size += sess.get_sys_var_in_pc_str().get_serialize_size();
-  for (int64_t j = 0; j< share::ObSysVarFactory::ALL_SYS_VARS_COUNT; ++j) {
-      if (ObSysVariables::get_sys_var_id(j) == SYS_VAR_SERVER_UUID ||
-          ObSysVariables::get_sys_var_id(j) == SYS_VAR_OB_PROXY_PARTITION_HIT ||
-          ObSysVariables::get_sys_var_id(j) == SYS_VAR_OB_STATEMENT_TRACE_ID ||
-          ObSysVariables::get_sys_var_id(j) == SYS_VAR_VERSION_COMMENT ||
-          ObSysVariables::get_sys_var_id(j) == SYS_VAR__OB_PROXY_WEAKREAD_FEEDBACK ||
-          ObSysVariables::get_sys_var_id(j) ==  SYS_VAR_SYSTEM_TIME_ZONE ||
-          ObSysVariables::get_sys_var_id(j) ==  SYS_VAR_PID_FILE ||
-          ObSysVariables::get_sys_var_id(j) ==  SYS_VAR_PORT ||
-          ObSysVariables::get_sys_var_id(j) ==  SYS_VAR_SOCKET) {
-      // no need sync sys var
-      continue;
+  if (OB_FAIL(sess.get_sys_var_in_pc_str(sys_var_in_pc_str))) {
+    LOG_WARN("fail to get sys var in pc str", K(ret));
+  } else {
+    size += sys_var_in_pc_str.get_serialize_size();
+    for (int64_t j = 0; j< share::ObSysVarFactory::ALL_SYS_VARS_COUNT; ++j) {
+        if (ObSysVariables::get_sys_var_id(j) == SYS_VAR_SERVER_UUID ||
+            ObSysVariables::get_sys_var_id(j) == SYS_VAR_OB_PROXY_PARTITION_HIT ||
+            ObSysVariables::get_sys_var_id(j) == SYS_VAR_OB_STATEMENT_TRACE_ID ||
+            ObSysVariables::get_sys_var_id(j) == SYS_VAR_VERSION_COMMENT ||
+            ObSysVariables::get_sys_var_id(j) == SYS_VAR__OB_PROXY_WEAKREAD_FEEDBACK ||
+            ObSysVariables::get_sys_var_id(j) ==  SYS_VAR_SYSTEM_TIME_ZONE ||
+            ObSysVariables::get_sys_var_id(j) ==  SYS_VAR_PID_FILE ||
+            ObSysVariables::get_sys_var_id(j) ==  SYS_VAR_PORT ||
+            ObSysVariables::get_sys_var_id(j) ==  SYS_VAR_SOCKET) {
+        // no need sync sys var
+        continue;
+      }
+      size += sess.get_sys_var(j)->get_serialize_size();
     }
-    size += sess.get_sys_var(j)->get_serialize_size();
   }
-  return size;
+  return ret;
 }
 
 int ObSysVarEncoder::compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
@@ -3166,12 +3189,15 @@ int ObSysVarEncoder::display_sess_info(ObSQLSessionInfo &sess, const char* curre
         // do nothing
       }
     }
+    ObString current_sys_var_in_pc_str;
     if (OB_FAIL(ret)) {
 
-    } else if (sess.get_sys_var_in_pc_str() != last_sess_sys_var_in_pc_str) {
+    } else if (OB_FAIL(sess.get_sys_var_in_pc_str(current_sys_var_in_pc_str))) {
+      LOG_WARN("fail to get sys var in pc str", K(ret));
+    } else if (current_sys_var_in_pc_str != last_sess_sys_var_in_pc_str) {
       share::ObTaskController::get().allow_next_syslog();
       LOG_WARN("failed to verify sys var in pc str", K(ret), "current_sess_sys_var_in_pc_str",
-            sess.get_sys_var_in_pc_str(),
+            current_sys_var_in_pc_str,
             "last_sess_sys_var_in_pc_str", last_sess_sys_var_in_pc_str);
     } else if (!is_error) {
       share::ObTaskController::get().allow_next_syslog();
@@ -3233,11 +3259,14 @@ int ObAppInfoEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const i
   return ret;
 }
 
-int64_t ObAppInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess)
+int ObAppInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)
 {
-  int64_t len = 0;
-  get_serialize_size(sess, len);
-  return len;
+  int ret = OB_SUCCESS;
+  size = 0;
+  if (OB_FAIL(get_serialize_size(sess, size))) {
+    LOG_WARN("fail to get serialize size", K(ret));
+  }
+  return ret;
 }
 
 int ObAppInfoEncoder::compare_sess_info(ObSQLSessionInfo &sess, const char* current_sess_buf, int64_t current_sess_length,
@@ -3371,11 +3400,14 @@ int ObClientIdInfoEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf, co
   return ret;
 }
 
-int64_t ObClientIdInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess)
+int ObClientIdInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)
 {
-  int64_t len = 0;
-  get_serialize_size(sess, len);
-  return len;
+  int ret = OB_SUCCESS;
+  size = 0;
+  if (OB_FAIL(get_serialize_size(sess, size))) {
+    LOG_WARN("fail to get serialize size", K(ret));
+  }
+  return ret;
 }
 
 int ObClientIdInfoEncoder::compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
@@ -3478,11 +3510,14 @@ int ObAppCtxInfoEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf, cons
   return ret;
 }
 
-int64_t ObAppCtxInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess)
+int ObAppCtxInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)
 {
-  int64_t len = 0;
-  get_serialize_size(sess, len);
-  return len;
+  int ret = OB_SUCCESS;
+  size = 0;
+  if (OB_FAIL(get_serialize_size(sess, size))) {
+    LOG_WARN("fail to get serialize size", K(ret));
+  }
+  return ret;
 }
 
 int ObAppCtxInfoEncoder::compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
@@ -3611,11 +3646,14 @@ int ObSequenceCurrvalEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
   return ret;
 }
 
-int64_t ObSequenceCurrvalEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess)
+int ObSequenceCurrvalEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)
 {
-  int64_t len = 0;
-  get_serialize_size(sess, len);
-  return len;
+  int ret = OB_SUCCESS;
+  size = 0;
+  if (OB_FAIL(get_serialize_size(sess, size))) {
+    LOG_WARN("fail to get serialize size", K(ret));
+  }
+  return ret;
 }
 
 int ObSequenceCurrvalEncoder::compare_sess_info(ObSQLSessionInfo &sess,
@@ -3746,11 +3784,14 @@ int ObQueryInfoEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const
   return ret;
 }
 
-int64_t ObQueryInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess)
+int ObQueryInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)
 {
-  int64_t len = 0;
-  get_serialize_size(sess, len);
-  return len;
+  int ret = OB_SUCCESS;
+  size = 0;
+  if (OB_FAIL(get_serialize_size(sess, size))) {
+    LOG_WARN("fail to get serialize size", K(ret));
+  }
+  return ret;
 }
 
 int ObQueryInfoEncoder::compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
@@ -3930,11 +3971,14 @@ int ObControlInfoEncoder::fetch_sess_info(ObSQLSessionInfo &sess, char *buf, con
   return ret;
 }
 
-int64_t ObControlInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess)
+int ObControlInfoEncoder::get_fetch_sess_info_size(ObSQLSessionInfo& sess, int64_t &size)
 {
-  int64_t len = 0;
-  get_serialize_size(sess, len);
-  return len;
+  int ret = OB_SUCCESS;
+  size = 0;
+  if (OB_FAIL(get_serialize_size(sess, size))) {
+    LOG_WARN("fail to get serialize size", K(ret));
+  }
+  return ret;
 }
 
 int ObControlInfoEncoder::compare_sess_info(ObSQLSessionInfo &sess, const char *current_sess_buf,
@@ -4010,46 +4054,9 @@ int ObSQLSessionInfo::sql_sess_record_sql_stat_start_value(ObExecutingSqlStatRec
   return ret;
 }
 
-int ObSQLSessionInfo::set_service_name(const ObString& service_name)
-{
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(service_name_.init(service_name))) {
-    LOG_WARN("fail to init service_name", KR(ret), K(service_name));
-  }
-  return ret;
-}
 int ObSQLSessionInfo::check_service_name_and_failover_mode(const uint64_t tenant_id) const
 {
-  // if failover_mode is on, and the session is created via service_name
-  // the tenant should be primary
-  // service name must exist and service status must be started
-  // if service_name is not empty, the version must be >= 4240
   int ret = OB_SUCCESS;
-  bool is_sts_ready = false;
-  if (service_name_.is_empty()) {
-    // do nothing
-  } else if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id))) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id));
-  } else {
-    MTL_SWITCH(tenant_id) {
-      rootserver::ObTenantInfoLoader *tenant_info_loader = MTL(rootserver::ObTenantInfoLoader*);
-      if (OB_ISNULL(tenant_info_loader)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("tenant_info_loader is null", KR(ret), KP(tenant_info_loader));
-      } else if (OB_FAIL(tenant_info_loader->check_if_sts_is_ready(is_sts_ready))) {
-        LOG_WARN("fail to execute check_if_sts_is_ready", KR(ret));
-      } else if (failover_mode_ && is_sts_ready) {
-        // 'sts_ready' indicates that the 'access_mode' is 'RAW_WRITE'
-        // The reason for using 'sts_ready' is that we believe all connections intending to reach the
-        // primary tenant should be accepted before the 'access_mode' switches to 'RAW_WRITE'.
-        ret = OB_NOT_PRIMARY_TENANT;
-        LOG_WARN("the tenant is not primary, the request is not allowed", KR(ret), K(is_sts_ready));
-      } else if (OB_FAIL(tenant_info_loader->check_if_the_service_name_is_stopped(service_name_))) {
-        LOG_WARN("fail to execute check_if_the_service_name_is_stopped", KR(ret), K(service_name_));
-      }
-    }
-  }
   return ret;
 }
 int ObSQLSessionInfo::check_service_name_and_failover_mode() const

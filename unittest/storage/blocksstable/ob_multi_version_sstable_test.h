@@ -26,7 +26,6 @@
 #include "share/ob_local_device.h"
 #include "storage/ls/ob_ls.h"
 #include "storage/ls/ob_ls_tablet_service.h"
-#include "storage/mock_ob_meta_report.h"
 #include "storage/mock_disk_usage_report.h"
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "lib/file/file_directory_utils.h"
@@ -76,7 +75,7 @@ int init_io_device(const char *test_name,
   const int64_t bucket_num = 1024L;
   const int64_t max_cache_size = 1024L * 1024L * 512;
   const int64_t block_size = common::OB_MALLOC_BIG_BLOCK_SIZE;
-  const int64_t mem_limit = 10 * 1024L * 1024L * 1024L;
+  const int64_t mem_limit = 10LL * 1024 * 1024 * 1024;
   lib::set_memory_limit(mem_limit);
 
   if (NULL == getcwd(cur_dir,  OB_MAX_FILE_NAME_LENGTH)) {
@@ -232,7 +231,6 @@ public:
   static compaction::ObCompactionMemoryContext mem_ctx_;
   char test_name_[100];
 
-  MockObMetaReport rs_reporter_;
   MockDiskUsageReport disk_reporter_;
 };
 

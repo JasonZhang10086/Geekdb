@@ -122,6 +122,38 @@ int ObTableSqlService::exec_delete(
   return ret;
 }
 
+int ObTableSqlService::exec_dml(common::ObISQLClient &sql_client,
+    const uint64_t tenant_id,
+    const char *table_name,
+    const ObDMLSqlSplicer &dml,
+    const int64_t target_affected_row_count,
+    const bool insert_ignore)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  if (!is_valid_tenant_id(tenant_id) || OB_ISNULL(table_name)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(table_name));
+  } else if (dml.empty()) {
+    if (target_affected_row_count > 0) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("dml is empty", KR(ret), K(target_affected_row_count));
+    }
+  } else {
+    const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
+    ObDMLExecHelper exec(sql_client, exec_tenant_id);
+    int64_t affected_rows = 0;
+    if (OB_FAIL(exec.exec_batch_insert(table_name, dml, affected_rows,
+            insert_ignore ? "INSERT IGNORE" : "INSERT"))) {
+      LOG_WARN("failed to exec batch insert", KR(ret), K(table_name), K(insert_ignore));
+    } else if (target_affected_row_count >= 0 && affected_rows != target_affected_row_count) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("affected rows not match", KR(ret), K(target_affected_row_count), K(affected_rows));
+    }
+  }
+  return ret;
+}
+
 int ObTableSqlService::delete_table_part_info(const ObTableSchema &table_schema,
                                               const int64_t new_schema_version,
                                               ObISQLClient &sql_client)
@@ -153,9 +185,8 @@ int ObTableSqlService::delete_table_part_info(const ObTableSchema &table_schema,
               0 == STRCMP(tname[i], OB_ALL_DEF_SUB_PART_TNAME))) {
           continue;
         }
-        if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %ld AND table_id=%lu",
+        if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE table_id=%lu",
                                    tname[i],
-                                   ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                                    ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_schema.get_table_id())))) {
           LOG_WARN("append_fmt failed", K(ret));
         } else if (OB_FAIL(sql_client.write(exec_tenant_id, sql.ptr(), affected_rows))) {
@@ -169,8 +200,10 @@ int ObTableSqlService::delete_table_part_info(const ObTableSchema &table_schema,
         } else {
           new_table.set_schema_version(new_schema_version);
           const ObPartitionSchema *new_table_schema = &new_table;
-          ObDropPartInfoHelper part_helper(new_table_schema, sql_client);
-          if (OB_FAIL(part_helper.delete_partition_info())) {
+          ObDropPartInfoHelper part_helper(sql_client, new_table.get_tenant_id());
+          if (OB_FAIL(part_helper.init(new_table_schema))) {
+            LOG_WARN("failed to init part_helper", KR(ret), KPC(new_table_schema));
+          } else if (OB_FAIL(part_helper.delete_partition_info())) {
             LOG_WARN("delete partition info failed", K(ret));
           }
         }
@@ -269,9 +302,8 @@ int ObTableSqlService::drop_inc_partition(common::ObISQLClient &sql_client,
     if (OB_ISNULL(part_array)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("partition array is null", K(ret), K(inc_table));
-    } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %ld AND table_id=%lu",
+    } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE table_id=%lu",
                                       OB_ALL_PART_TNAME,
-                                      ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                                       ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id)))) {
       LOG_WARN("append_fmt failed", K(ret));
     } else if (!is_truncate_table) {
@@ -333,9 +365,8 @@ int ObTableSqlService::drop_inc_sub_partition(common::ObISQLClient &sql_client,
     if (OB_ISNULL(part_array)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("partition array is null", K(ret), K(inc_table));
-    } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %ld AND table_id=%lu AND (0 = 1",
+    } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE table_id=%lu AND (0 = 1",
                                       OB_ALL_SUB_PART_TNAME,
-                                      ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                                       ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id)))) {
       LOG_WARN("append_fmt failed", K(ret));
     } else if (OB_FAIL(condition_str.assign_fmt("( 1 = 0"))) {
@@ -458,9 +489,8 @@ int ObTableSqlService::drop_inc_all_sub_partition(common::ObISQLClient &sql_clie
     if (OB_ISNULL(part_array)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("partition array is null", K(ret), K(inc_table));
-    } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %ld AND table_id=%lu",
+    } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE table_id=%lu",
                                       OB_ALL_SUB_PART_TNAME,
-                                      ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                                       ObSchemaUtils::get_extract_schema_id(exec_tenant_id, ori_table.get_table_id())))) {
       LOG_WARN("append_fmt failed", K(ret));
     } else if (!is_truncate_table) {
@@ -1317,125 +1347,110 @@ int ObTableSqlService::add_columns_for_core(ObISQLClient &sql_client, const ObTa
   return ret;
 }
 
+int ObTableSqlService::add_columns_dml(
+    const ObTableSchema &table,
+    share::ObDMLSqlSplicer &all_column_dml,
+    int64_t &column_count)
+{
+  int ret = OB_SUCCESS;
+  int64_t start_ts = ObTimeUtility::current_time();
+  const int64_t schema_version = table.get_schema_version();
+  const uint64_t tenant_id = table.get_tenant_id();
+  const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
+  column_count = 0;
+  if (OB_FAIL(check_ddl_allowed(table))) {
+    LOG_WARN("check ddl allowd failed", KR(ret), K(table));
+  } else {
+    for (ObTableSchema::const_column_iterator iter = table.column_begin();
+        OB_SUCCESS == ret && iter != table.column_end(); ++iter) {
+      if (OB_ISNULL(iter) || OB_ISNULL(*iter)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("iter is NULL", KR(ret));
+      } else {
+        ObColumnSchemaV2 &column = **iter;
+        const int64_t raw_schema_version = column.get_schema_version();
+        const uint64_t raw_tenant_id = column.get_tenant_id();
+        const uint64_t raw_table_id = column.get_table_id();
+        column.set_schema_version(schema_version);
+        column.set_tenant_id(tenant_id);
+        column.set_table_id(table.get_table_id());
+        if (OB_FAIL(gen_column_dml(exec_tenant_id, column, all_column_dml))) {
+          LOG_WARN("failed to gen_column_dml", KR(ret), K(exec_tenant_id), K(column));
+        } else if (OB_FAIL(all_column_dml.finish_row())) {
+          LOG_WARN("failed to finish row", KR(ret));
+        } else {
+          column_count++;
+        }
+        column.set_schema_version(raw_schema_version);
+        column.set_tenant_id(raw_tenant_id);
+        column.set_table_id(raw_table_id);
+      }
+    }
+  }
+  LOG_INFO("add_columns_dml finish", KR(ret), K(column_count), "cost", ObTimeUtility::current_time() - start_ts);
+  return ret;
+}
+
+int ObTableSqlService::batch_add_columns_for_create_table(common::ObISQLClient &sql_client,
+    const ObIArray<ObTableSchema> &tables)
+{
+  int ret = OB_SUCCESS;
+  if (tables.empty()) {
+  } else {
+    ObDMLSqlSplicer dml;
+    common::ObTimeGuard time_guard("batch_add_columns_for_create_table", 1_ms);
+    const uint64_t tenant_id = tables.at(0).get_tenant_id();
+    int64_t column_count = 0;
+    for (int64_t i = 0; i < tables.count() && OB_SUCC(ret); i++) {
+      const ObTableSchema &table = tables.at(i);
+      int64_t tmp = 0;
+      if (table.get_tenant_id() != tenant_id) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tenant id not same", KR(ret), K(table), K(tenant_id));
+      } else if (table.is_view_table() && !table.view_column_filled()) {
+      } else if (OB_FAIL(add_columns_dml(table, dml, tmp))) {
+        ObCStringHelper helper;
+        LOG_WARN("insert table schema failed, ", KR(ret), "table", helper.convert(table));
+      } else {
+        column_count += tmp;
+      }
+    }
+    time_guard.click("generate_dml") ;
+    if (FAILEDx(exec_dml(sql_client, tenant_id, OB_ALL_COLUMN_TNAME, dml, column_count))) {
+      LOG_WARN("failed to insert all_column", KR(ret), K(tenant_id), K(column_count));
+    } else if (FALSE_IT(time_guard.click("insert_all_column"))) {
+    } else if (OB_FAIL(dml.set_default_columns("is_deleted", "0"))) {
+      LOG_WARN("failed to set default columns", KR(ret));
+    } else if (OB_FAIL(exec_dml(sql_client, tenant_id, OB_ALL_COLUMN_HISTORY_TNAME, dml, column_count))) {
+      LOG_WARN("failed to insert all_column_history", KR(ret), K(tenant_id), K(column_count));
+    } else if (FALSE_IT(time_guard.click("insert_all_column_history"))) {
+    }
+  }
+  return ret;
+}
+
+
 int ObTableSqlService::add_columns_for_not_core(ObISQLClient &sql_client,
                                                 const ObTableSchema &table)
 {
   int ret = OB_SUCCESS;
-  const int64_t new_schema_version = table.get_schema_version();
   const uint64_t tenant_id = table.get_tenant_id();
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
+  int64_t column_count = 0;
+  ObDMLSqlSplicer dml;
   if (OB_FAIL(check_ddl_allowed(table))) {
-    LOG_WARN("check ddl allowd failed", K(ret), K(table));
-  }
-  ObSqlString column_sql_obj;
-  ObSqlString column_history_sql_obj;
-  ObSqlString *column_sql_ptr = &column_sql_obj;
-  ObSqlString *column_history_sql_ptr = &column_history_sql_obj;
-  // for batch sql query
-  bool enable_stash_query = false;
-  ObSqlTransQueryStashDesc *stash_desc = NULL;
-  ObSqlTransQueryStashDesc *stash_desc2 = NULL;
-  ObMySQLTransaction* trans = dynamic_cast<ObMySQLTransaction*>(&sql_client);
-  if (OB_SUCC(ret) && trans != nullptr && trans->get_enable_query_stash()) {
-    if (OB_FAIL(trans->get_stash_query(tenant_id, OB_ALL_COLUMN_TNAME, stash_desc))) {
-      LOG_WARN("get_stash_query fail", K(ret), K(tenant_id));
-    } else if (OB_FAIL(trans->get_stash_query(tenant_id, OB_ALL_COLUMN_HISTORY_TNAME, stash_desc2))) {
-      LOG_WARN("get_stash_query fail", K(ret), K(tenant_id));
-    } else {
-      if ((stash_desc->get_stash_query().empty() && !stash_desc2->get_stash_query().empty()) ||
-        (!stash_desc->get_stash_query().empty() && stash_desc2->get_stash_query().empty())) {
-        LOG_WARN("table stash scene is not match", K(stash_desc->get_row_cnt()), K(stash_desc2->get_row_cnt()));
-        if (OB_FAIL(trans->do_stash_query())) {
-           LOG_WARN("do_stash_query fail", K(ret));
-        } else if (OB_FAIL(trans->get_stash_query(tenant_id, OB_ALL_COLUMN_TNAME, stash_desc))) {
-          LOG_WARN("get_stash_query fail", K(ret), K(tenant_id));
-        } else if (OB_FAIL(trans->get_stash_query(tenant_id, OB_ALL_COLUMN_HISTORY_TNAME, stash_desc2))) {
-          LOG_WARN("get_stash_query fail", K(ret), K(tenant_id));
-        }
-      }
-      if (OB_SUCC(ret)) {
-        column_sql_ptr = &stash_desc->get_stash_query();
-        column_history_sql_ptr = &stash_desc2->get_stash_query();
-        enable_stash_query = true;
-      }
-    }
-  }
-  ObSqlString &column_sql = *column_sql_ptr;
-  ObSqlString &column_history_sql = *column_history_sql_ptr;
-  for (ObTableSchema::const_column_iterator iter = table.column_begin();
-      OB_SUCCESS == ret && iter != table.column_end(); ++iter) {
-    if (OB_ISNULL(*iter)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("iter is NULL", K(ret));
-    } else {
-      ObColumnSchemaV2 column;
-      if (OB_FAIL(column.assign(**iter))) {
-        LOG_WARN("fail to assign column", KR(ret), KPC(*iter));
-      } else {
-        column.set_schema_version(new_schema_version);
-        column.set_tenant_id(table.get_tenant_id());
-        column.set_table_id(table.get_table_id());
-      }
-      ObDMLSqlSplicer dml;
-      if (FAILEDx(gen_column_dml(exec_tenant_id, column, dml))) {
-        LOG_WARN("gen_column_dml failed", K(column), K(ret));
-      } else if (column_sql.empty()) {
-        if (OB_FAIL(dml.splice_insert_sql_without_plancache(OB_ALL_COLUMN_TNAME, column_sql))) {
-          LOG_WARN("splice_insert_sql failed", "table_name", OB_ALL_COLUMN_TNAME, K(ret));
-        } else {
-          const int64_t is_deleted = 0;
-          if (OB_FAIL(dml.add_column("is_deleted", is_deleted))) {
-            LOG_WARN("dml add column failed", K(ret));
-          } else if (OB_FAIL(dml.splice_insert_sql_without_plancache(
-                  OB_ALL_COLUMN_HISTORY_TNAME, column_history_sql))) {
-            LOG_WARN("splice_insert_sql failed", "table_name", OB_ALL_COLUMN_HISTORY_TNAME, K(ret));
-          }
-        }
-      } else {
-        ObSqlString value_str;
-        if (OB_FAIL(dml.splice_values(value_str))) {
-          LOG_WARN("splice_values failed", K(ret));
-        } else if (OB_FAIL(column_sql.append_fmt(", (%s)", value_str.ptr()))) {
-          LOG_WARN("append_fmt failed", K(value_str), K(ret));
-        } else {
-          value_str.reset();
-          const int64_t is_deleted = 0;
-          if (OB_FAIL(dml.add_column("is_deleted", is_deleted))) {
-            LOG_WARN("add column failed", K(ret));
-          } else if (OB_FAIL(dml.splice_values(value_str))) {
-            LOG_WARN("splice_values failed", K(ret));
-          } else if (OB_FAIL(column_history_sql.append_fmt(", (%s)", value_str.ptr()))) {
-            LOG_WARN("append_fmt failed", K(value_str), K(ret));
-          }
-        }
-      }
-    }
-  }
-  int64_t affected_rows = 0;
-  if (OB_FAIL(ret)) {
-  } else if (enable_stash_query) {
-    stash_desc->add_row_cnt(table.get_column_count());
-    stash_desc2->add_row_cnt(table.get_column_count());
-    if (OB_FAIL(trans->do_stash_query_batch())) {
-      LOG_WARN("do_stash_query fail", K(ret));
-    } else if (table.is_index_table() && is_virtual_table(table.get_data_table_id()) 
-        && OB_FAIL(trans->do_stash_query())) {
-      // for virtual table index who need to sync schema version, it will try to get data table schema from inner table
-      // the sql to insert into __all_column may not be executed if stash query is enabled, and get table schema will fail
-      LOG_WARN("failed to do stash query for virtual table index", K(ret),
-          "table_name", table.get_table_name(), "table_id", table.get_table_id(), 
-          "data_table_id", table.get_data_table_id());
-    }
-  } else if (OB_FAIL(sql_client.write(exec_tenant_id, column_sql.ptr(), affected_rows))) {
-    LOG_WARN("execute sql failed", K(column_sql), K(ret));
-  } else if (affected_rows != table.get_column_count()) {
-    LOG_WARN("affected_rows not equal to column count", K(affected_rows),
-        "column_count", table.get_column_count(), K(ret));
-  } else if (OB_FAIL(sql_client.write(exec_tenant_id, column_history_sql.ptr(), affected_rows))) {
-    LOG_WARN("execute_sql failed", K(column_history_sql), K(ret));
-  } else if (affected_rows != table.get_column_count()) {
-    LOG_WARN("affected_rows not equal to column count", K(affected_rows),
-        "column_count", table.get_column_count(), K(ret));
+    LOG_WARN("check ddl allowd failed", KR(ret), K(table));
+  } else if (OB_FAIL(add_columns_dml(table, dml, column_count))) {
+    LOG_WARN("failed to add columns dml", KR(ret), K(table));
+  } else if (column_count != table.get_column_count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("column count not match", KR(ret), K(column_count), K(table.get_column_count()));
+  } else if (OB_FAIL(exec_dml(sql_client, exec_tenant_id, OB_ALL_COLUMN_TNAME, dml, column_count))) {
+    LOG_WARN("failed to exec dml", KR(ret), K(column_count));
+  } else if (OB_FAIL(dml.set_default_columns("is_deleted", "0"))) {
+    LOG_WARN("failed to set default columns", KR(ret));
+  } else if (OB_FAIL(exec_dml(sql_client, exec_tenant_id, OB_ALL_COLUMN_HISTORY_TNAME, dml, column_count))) {
+    LOG_WARN("failed to exec dml", KR(ret), K(column_count));
   }
   return ret;
 }
@@ -1445,12 +1460,110 @@ int ObTableSqlService::add_constraints(ObISQLClient &sql_client,
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(check_ddl_allowed(table))) {
-    LOG_WARN("check ddl allowd failed", K(ret), K(table));
+    LOG_WARN("check ddl allowd failed", KR(ret), K(table));
   } else if (is_core_table(table.get_table_id())) {
     // ignore
   } else if (table.get_constraint_count() > 0) {
     if (OB_FAIL(add_constraints_for_not_core(sql_client, table))) {
-      LOG_WARN("add_constraints_for_not_core failed", K(ret));
+      LOG_WARN("add_constraints_for_not_core failed", KR(ret));
+    }
+  }
+  return ret;
+}
+
+int ObTableSqlService::add_constraints_dml(
+    const ObTableSchema &table,
+    ObDMLSqlSplicer &cst_dml,
+    ObDMLSqlSplicer &cst_col_dml,
+    int64_t &cst_col_count)
+{
+  int ret = OB_SUCCESS;
+  const int64_t new_schema_version = table.get_schema_version();
+  const uint64_t tenant_id = table.get_tenant_id();
+  const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
+  if (OB_FAIL(check_ddl_allowed(table))) {
+    LOG_WARN("check ddl allowd failed", KR(ret), K(table));
+  } else if (is_inner_table(table.get_table_id())) {
+    // To avoid cyclic dependence
+    ret = OB_OP_NOT_ALLOW;
+    LOG_WARN("should not be here", KR(ret), K(table));
+  }
+  for (ObTableSchema::constraint_iterator cst_iter = table.constraint_begin_for_non_const_iter();
+       OB_SUCC(ret) && cst_iter != table.constraint_end_for_non_const_iter();
+       ++cst_iter) {
+    if (OB_ISNULL(*cst_iter)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("iter is NULL", KR(ret));
+    } else {
+      // generate sql of 'insert into __all_constraint_history' and 'insert into __all_constraint'
+      (*cst_iter)->set_schema_version(new_schema_version);
+      (*cst_iter)->set_tenant_id(tenant_id);
+      (*cst_iter)->set_table_id(table.get_table_id());
+      if (OB_FAIL(gen_constraint_dml(exec_tenant_id, **cst_iter, cst_dml))) {
+        LOG_WARN("gen_constraint_dml failed", KR(ret), K(**cst_iter));
+      } else if (OB_FAIL(cst_dml.finish_row())) {
+        LOG_WARN("failed to finish row", KR(ret));
+      }
+      for (ObConstraint::const_cst_col_iterator cst_col_iter = (*cst_iter)->cst_col_begin();
+            OB_SUCC(ret) && (cst_col_iter != (*cst_iter)->cst_col_end());
+            ++cst_col_iter, ++cst_col_count) {
+        if (OB_FAIL(gen_constraint_column_dml(exec_tenant_id, **cst_iter, *cst_col_iter, cst_col_dml))) {
+          LOG_WARN("failed to gen constraint column dml", KR(ret));
+        } else if (OB_FAIL(cst_col_dml.finish_row())) {
+          LOG_WARN("failed to finish row", KR(ret));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTableSqlService::batch_add_constraints_for_create_table(
+    common::ObISQLClient &sql_client, const ObIArray<ObTableSchema> &tables)
+{
+  int ret = OB_SUCCESS;
+  if (tables.empty()) {
+  } else {
+    ObDMLSqlSplicer cst_dml;
+    ObDMLSqlSplicer cst_col_dml;
+    common::ObTimeGuard time_guard("batch_add_constraints_for_create_table", 1_ms);
+    const uint64_t tenant_id = tables.at(0).get_tenant_id();
+    int64_t cst_col_count = 0;
+    int64_t cst_count = 0;
+    for (int64_t i = 0; i < tables.count() && OB_SUCC(ret); i++) {
+      const ObTableSchema &table = tables.at(i);
+      int64_t tmp = 0;
+      if (table.get_tenant_id() != tenant_id) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tenant id not same", KR(ret), K(table), K(tenant_id));
+      } else if (table.is_view_table() || table.get_constraint_count() <= 0) {
+      } else if (OB_FAIL(add_constraints_dml(table, cst_dml, cst_col_dml, tmp))) {
+        ObCStringHelper helper;
+        LOG_WARN("insert table schema failed, ", KR(ret), "table", helper.convert(table));
+      } else {
+        cst_count += table.get_constraint_count();
+        cst_col_count += tmp;
+      }
+    }
+    time_guard.click("generate_dml") ;
+    if (FAILEDx(exec_dml(sql_client, tenant_id, OB_ALL_CONSTRAINT_TNAME, cst_dml, cst_count))) {
+      LOG_WARN("failed to insert all_cst", KR(ret), K(tenant_id), K(cst_count));
+    } else if (FALSE_IT(time_guard.click("insert_all_cst"))) {
+    } else if (OB_FAIL(cst_dml.set_default_columns("is_deleted", "0"))) {
+      LOG_WARN("failed to set default columns", KR(ret));
+    } else if (OB_FAIL(exec_dml(sql_client, tenant_id, OB_ALL_CONSTRAINT_HISTORY_TNAME, cst_dml, cst_count))) {
+      LOG_WARN("failed to insert all_cst_history", KR(ret), K(tenant_id), K(cst_count));
+    } else if (FALSE_IT(time_guard.click("insert_all_cst_history"))) {
+    } else if (OB_FAIL(exec_dml(sql_client, tenant_id, OB_ALL_TENANT_CONSTRAINT_COLUMN_TNAME,
+            cst_col_dml, cst_col_count))) {
+      LOG_WARN("failed to insert all_cst_column", KR(ret), K(tenant_id), K(cst_col_count));
+    } else if (FALSE_IT(time_guard.click("insert_all_cst_col"))) {
+    } else if (OB_FAIL(cst_col_dml.set_default_columns("is_deleted", "0"))) {
+      LOG_WARN("failed to set default columns", KR(ret));
+    } else if (OB_FAIL(exec_dml(sql_client, tenant_id, OB_ALL_TENANT_CONSTRAINT_COLUMN_HISTORY_TNAME,
+            cst_col_dml, cst_col_count))) {
+      LOG_WARN("failed to insert all_cst_column_history", KR(ret), K(tenant_id), K(cst_col_count));
+    } else if (FALSE_IT(time_guard.click("insert_all_cst_col_history"))) {
     }
   }
   return ret;
@@ -1461,138 +1574,37 @@ int ObTableSqlService::add_constraints_for_not_core(ObISQLClient &sql_client,
                                                     const ObTableSchema &table)
 {
   int ret = OB_SUCCESS;
-  const int64_t new_schema_version = table.get_schema_version();
   const uint64_t tenant_id = table.get_tenant_id();
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  ObDMLExecHelper exec(sql_client, exec_tenant_id);
-  int64_t affected_rows = 0;
   int64_t cst_cols_num_in_table = 0;
-  ObSqlString constraint_sql;
-  ObSqlString constraint_history_sql;
-  ObSqlString constraint_column_sql;
-  ObSqlString constraint_column_history_sql;
   ObDMLSqlSplicer cst_dml;
   ObDMLSqlSplicer cst_col_dml;
-  const int64_t is_deleted = 0;
   if (OB_FAIL(check_ddl_allowed(table))) {
-    LOG_WARN("check ddl allowd failed", K(ret), K(table));
+    LOG_WARN("check ddl allowd failed", KR(ret), K(table));
   } else if (is_inner_table(table.get_table_id())) {
     // To avoid cyclic dependence
     ret = OB_OP_NOT_ALLOW;
-    LOG_WARN("should not be here", K(ret), K(table));
+    LOG_WARN("should not be here", KR(ret), K(table));
+  } else if (OB_FAIL(add_constraints_dml(table, cst_dml, cst_col_dml, cst_cols_num_in_table))) {
+    LOG_WARN("failed to add constraints dml", KR(ret), K(table));
+  } else if (OB_FAIL(exec_dml(sql_client, exec_tenant_id, OB_ALL_CONSTRAINT_TNAME, cst_dml,
+          table.get_constraint_count()))) {
+    LOG_WARN("failed to insert all constraint table", KR(ret));
+  } else if (OB_FAIL(cst_dml.set_default_columns("is_deleted", "0"))) {
+    LOG_WARN("failed to set default columns", KR(ret));
+  } else if (OB_FAIL(exec_dml(sql_client, exec_tenant_id, OB_ALL_CONSTRAINT_HISTORY_TNAME, cst_dml,
+          table.get_constraint_count()))) {
+    LOG_WARN("failed to insert all constraint history table", KR(ret));
+  } else if (cst_col_dml.empty()) {
+  } else if (OB_FAIL(exec_dml(sql_client, exec_tenant_id, OB_ALL_TENANT_CONSTRAINT_COLUMN_TNAME,
+          cst_col_dml, cst_cols_num_in_table))) {
+    LOG_WARN("failed to insert all column constraint history table", KR(ret));
+  } else if (OB_FAIL(cst_col_dml.set_default_columns("is_deleted", "0"))) {
+    LOG_WARN("failed to set default columns", KR(ret));
+  } else if (OB_FAIL(exec_dml(sql_client, exec_tenant_id, OB_ALL_TENANT_CONSTRAINT_COLUMN_HISTORY_TNAME,
+          cst_col_dml, cst_cols_num_in_table))) {
+    LOG_WARN("failed to insert all column constraint history table", KR(ret));
   }
-  for (ObTableSchema::constraint_iterator cst_iter = table.constraint_begin_for_non_const_iter();
-       OB_SUCC(ret) && cst_iter != table.constraint_end_for_non_const_iter();
-       ++cst_iter) {
-    if (OB_ISNULL(*cst_iter)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("iter is NULL", K(ret));
-    } else {
-      // generate sql of 'insert into __all_constraint_history' and 'insert into __all_constraint'
-      cst_dml.reset();
-      (*cst_iter)->set_schema_version(new_schema_version);
-      (*cst_iter)->set_tenant_id(table.get_tenant_id());
-      (*cst_iter)->set_table_id(table.get_table_id());
-      if (OB_FAIL(gen_constraint_dml(exec_tenant_id, **cst_iter, cst_dml))) {
-        LOG_WARN("gen_constraint_dml failed", K(ret), K(**cst_iter));
-      } else if (cst_iter == table.constraint_begin_for_non_const_iter()) {
-        if (OB_FAIL(cst_dml.splice_insert_sql_without_plancache(OB_ALL_CONSTRAINT_TNAME, constraint_sql))) {
-          LOG_WARN("splice_insert_sql failed", "table_name", OB_ALL_CONSTRAINT_TNAME, K(ret));
-        } else {
-          if (OB_FAIL(cst_dml.add_column("is_deleted", is_deleted))) {
-            LOG_WARN("dml add constraint failed", K(ret));
-          } else if (OB_FAIL(cst_dml.splice_insert_sql_without_plancache(
-                     OB_ALL_CONSTRAINT_HISTORY_TNAME, constraint_history_sql))) {
-            LOG_WARN("splice_insert_sql failed", K(ret), "table_name", OB_ALL_CONSTRAINT_HISTORY_TNAME);
-          }
-        }
-      } else {
-        ObSqlString value_str;
-        if (OB_FAIL(cst_dml.splice_values(value_str))) {
-          LOG_WARN("splice_values failed", K(ret));
-        } else if (OB_FAIL(constraint_sql.append_fmt(", (%s)", value_str.ptr()))) {
-          LOG_WARN("append_fmt failed", K(value_str), K(ret));
-        } else {
-          value_str.reset();
-          if (OB_FAIL(cst_dml.add_column("is_deleted", is_deleted))) {
-            LOG_WARN("add constraint failed", K(ret));
-          } else if (OB_FAIL(cst_dml.splice_values(value_str))) {
-            LOG_WARN("splice_values failed", K(ret));
-          } else if (OB_FAIL(constraint_history_sql.append_fmt(", (%s)", value_str.ptr()))) {
-            LOG_WARN("append_fmt failed", K(value_str), K(ret));
-          }
-        }
-      }
-      // generate sql of 'insert into __all_constraint_column_history' and 'insert into __all_constraint_column'
-      if (OB_SUCC(ret)) {
-        for (ObConstraint::const_cst_col_iterator cst_col_iter = (*cst_iter)->cst_col_begin();
-             OB_SUCC(ret) && (cst_col_iter != (*cst_iter)->cst_col_end());
-             ++cst_col_iter, ++cst_cols_num_in_table) {
-          cst_col_dml.reset();
-          if (OB_FAIL(gen_constraint_column_dml(exec_tenant_id, **cst_iter, *cst_col_iter, cst_col_dml))) {
-            LOG_WARN("failed to gen constraint column dml", K(ret));
-          } else if (constraint_column_sql.empty()) {
-            if (OB_FAIL(cst_col_dml.splice_insert_sql_without_plancache(
-                OB_ALL_TENANT_CONSTRAINT_COLUMN_TNAME, constraint_column_sql))) {
-              LOG_WARN("splice_insert_sql failed", "table_name", OB_ALL_TENANT_CONSTRAINT_COLUMN_TNAME, K(ret));
-            } else {
-              if (OB_FAIL(cst_col_dml.add_column("is_deleted", is_deleted))) {
-                LOG_WARN("dml add constraint failed", K(ret));
-              } else if (OB_FAIL(cst_col_dml.splice_insert_sql_without_plancache(
-                         OB_ALL_TENANT_CONSTRAINT_COLUMN_HISTORY_TNAME, constraint_column_history_sql))) {
-                LOG_WARN("splice_insert_sql failed", "table_name", OB_ALL_TENANT_CONSTRAINT_COLUMN_HISTORY_TNAME, K(ret));
-              }
-            }
-          } else {
-            ObSqlString value_str;
-            if (OB_FAIL(cst_col_dml.splice_values(value_str))) {
-              LOG_WARN("splice_values failed", K(ret));
-            } else if (OB_FAIL(constraint_column_sql.append_fmt(", (%s)", value_str.ptr()))) {
-              LOG_WARN("append_fmt failed", K(value_str), K(ret));
-            } else {
-              value_str.reset();
-              if (OB_FAIL(cst_col_dml.add_column("is_deleted", is_deleted))) {
-                LOG_WARN("add constraint failed", K(ret));
-              } else if (OB_FAIL(cst_col_dml.splice_values(value_str))) {
-                LOG_WARN("splice_values failed", K(ret));
-              } else if (OB_FAIL(constraint_column_history_sql.append_fmt(", (%s)", value_str.ptr()))) {
-                LOG_WARN("append_fmt failed", K(value_str), K(ret));
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  // execute constraint_sql and constraint_history_sql
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(sql_client.write(exec_tenant_id, constraint_sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(ret), K(constraint_sql));
-    } else if (affected_rows != table.get_constraint_count()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("affected_rows not equal to constraint count", K(ret), K(affected_rows), K(table.get_constraint_count()));
-    } else if (OB_FAIL(sql_client.write(exec_tenant_id, constraint_history_sql.ptr(), affected_rows))) {
-      LOG_WARN("execute_sql failed", K(ret), K(constraint_history_sql));
-    } else if (affected_rows != table.get_constraint_count()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("affected_rows not equal to constraint count", K(ret), K(affected_rows), K(table.get_constraint_count()));
-    }
-  }
-  // execute constraint_column_sql and constraint_column_history_sql
-  if (OB_SUCC(ret) && !constraint_column_sql.empty()) {
-    if (OB_FAIL(sql_client.write(exec_tenant_id, constraint_column_sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(ret), K(constraint_column_sql));
-    } else if (affected_rows != cst_cols_num_in_table) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("affected_rows not equal to constraint col count in table", K(ret), K(affected_rows), K(cst_cols_num_in_table));
-    } else if (OB_FAIL(sql_client.write(exec_tenant_id, constraint_column_history_sql.ptr(), affected_rows))) {
-      LOG_WARN("execute_sql failed", K(constraint_column_history_sql), K(ret));
-    } else if (affected_rows != cst_cols_num_in_table) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("affected_rows not equal to constraint col count in table", K(ret), K(affected_rows), K(cst_cols_num_in_table));
-    }
-  }
-
   return ret;
 }
 
@@ -1671,34 +1683,30 @@ int ObTableSqlService::delete_constraint(common::ObISQLClient &sql_client,
       LOG_WARN("iter is NULL", K(ret));
     } else if (cst_iter == table_schema.constraint_begin()) {
       if (OB_FAIL(constraint_history_sql.assign_fmt(
-          "INSERT INTO %s(tenant_id, table_id, constraint_id, schema_version, is_deleted)"
-          " VALUES(%lu, %lu, %lu, %ld, %ld)",
+          "INSERT INTO %s(table_id, constraint_id, schema_version, is_deleted)"
+          " VALUES(%lu, %lu, %ld, %ld)",
           OB_ALL_CONSTRAINT_HISTORY_TNAME,
-          ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
           ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*cst_iter)->get_table_id()),
           (*cst_iter)->get_constraint_id(), new_schema_version, is_deleted))) {
         LOG_WARN("assign insert into __all_constraint_history fail",
             K(ret), K(tenant_id), K((*cst_iter)->get_table_id()), K((*cst_iter)->get_constraint_id()), K(new_schema_version));
       } else if (OB_FAIL(constraint_sql.assign_fmt(
-            "DELETE FROM %s WHERE (tenant_id, table_id, constraint_id)"
-            " IN ((%lu, %lu, %lu)",
+            "DELETE FROM %s WHERE (table_id, constraint_id)"
+            " IN ((%lu, %lu)",
             OB_ALL_CONSTRAINT_TNAME,
-            ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
             ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*cst_iter)->get_table_id()),
             (*cst_iter)->get_constraint_id()))) {
         LOG_WARN("assign_fmt failed", K(ret));
       }
     } else {
       if (OB_FAIL(constraint_history_sql.append_fmt(
-          ", (%lu, %lu, %lu, %ld, %ld)",
-          ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
+          ", (%lu, %lu, %ld, %ld)",
           ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*cst_iter)->get_table_id()),
           (*cst_iter)->get_constraint_id(), new_schema_version, is_deleted))) {
         LOG_WARN("assign insert into __all_constraint_history fail", K(ret), K(tenant_id),
                  K((*cst_iter)->get_table_id()), K((*cst_iter)->get_constraint_id()), K(new_schema_version));
       } else if (OB_FAIL(constraint_sql.append_fmt(
-          ", (%lu, %lu, %lu)",
-          ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
+          ", (%lu, %lu)",
           ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*cst_iter)->get_table_id()),
           (*cst_iter)->get_constraint_id()))) {
         LOG_WARN("assign_fmt failed", K(ret));
@@ -1711,20 +1719,18 @@ int ObTableSqlService::delete_constraint(common::ObISQLClient &sql_client,
            ++cst_col_iter, ++cst_cols_num_in_table) {
         if (constraint_column_sql.empty()) {
           if (OB_FAIL(constraint_column_history_sql.assign_fmt(
-              "INSERT INTO %s(tenant_id, table_id, constraint_id, column_id, schema_version, is_deleted)"
-              " VALUES(%lu, %lu, %lu, %lu, %ld, %ld)",
+              "INSERT INTO %s(table_id, constraint_id, column_id, schema_version, is_deleted)"
+              " VALUES(%lu, %lu, %lu, %ld, %ld)",
               OB_ALL_TENANT_CONSTRAINT_COLUMN_HISTORY_TNAME,
-              ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
               ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*cst_iter)->get_table_id()),
               (*cst_iter)->get_constraint_id(), *cst_col_iter, new_schema_version, is_deleted))) {
             LOG_WARN("assign insert into __all_constraint_column_history fail",
                      K(ret), K(tenant_id), K((*cst_iter)->get_table_id()), K((*cst_iter)->get_constraint_id()),
                      K(*cst_col_iter), K(new_schema_version), K(constraint_column_history_sql));
           } else if (OB_FAIL(constraint_column_sql.assign_fmt(
-              "DELETE FROM %s WHERE (tenant_id, table_id, constraint_id, column_id)"
-              " IN ((%lu, %lu, %lu, %lu)",
+              "DELETE FROM %s WHERE (table_id, constraint_id, column_id)"
+              " IN ((%lu, %lu, %lu)",
               OB_ALL_TENANT_CONSTRAINT_COLUMN_TNAME,
-              ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
               ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*cst_iter)->get_table_id()),
               (*cst_iter)->get_constraint_id(),
               *cst_col_iter))) {
@@ -1732,16 +1738,14 @@ int ObTableSqlService::delete_constraint(common::ObISQLClient &sql_client,
           }
         } else {
           if (OB_FAIL(constraint_column_history_sql.append_fmt(
-              ", (%lu, %lu, %lu, %lu, %ld, %ld)",
-              ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
+              ", (%lu, %lu, %lu, %ld, %ld)",
               ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*cst_iter)->get_table_id()),
               (*cst_iter)->get_constraint_id(), *cst_col_iter, new_schema_version, is_deleted))) {
             LOG_WARN("assign insert into __all_constraint_column_history fail",
                      K(ret), K(tenant_id), K((*cst_iter)->get_table_id()), K((*cst_iter)->get_constraint_id()),
                      K(*cst_col_iter), K(new_schema_version), K(constraint_column_history_sql));
           } else if (OB_FAIL(constraint_column_sql.append_fmt(
-              ", (%lu, %lu, %lu, %lu)",
-              ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
+              ", (%lu, %lu, %lu)",
               ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*cst_iter)->get_table_id()),
               (*cst_iter)->get_constraint_id(),
               *cst_col_iter))) {
@@ -2030,57 +2034,92 @@ int ObTableSqlService::add_table(
     const bool only_history)
 {
   int ret = OB_SUCCESS;
-
   ObDMLSqlSplicer dml;
   const uint64_t tenant_id = table.get_tenant_id();
   const int64_t table_id = table.get_table_id();
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  if (OB_FAIL(check_ddl_allowed(table))) {
-    LOG_WARN("check ddl allowd failed", K(ret), K(table));
-  } else if (OB_FAIL(gen_table_dml(exec_tenant_id, table, update_object_status_ignore_version, dml))) {
-    LOG_WARN("gen table dml failed", K(ret));
-  }
-
-  ObDMLExecHelper exec(sql_client, exec_tenant_id);
-  int64_t affected_rows = 0;
-  if (OB_SUCC(ret)) {
+  if (OB_FAIL(add_table_dml(table, update_object_status_ignore_version, dml))) {
+    LOG_WARN("failed to add table dml", KR(ret), K(table));
+  } else if (OB_FAIL(dml.finish_row())) {
+    LOG_WARN("failed to finish_row", KR(ret));
+  } else {
     if (!only_history) {
-      const char *table_name = NULL;
-      if (OB_FAIL(ObSchemaUtils::get_all_table_name(exec_tenant_id, table_name))) {
-        LOG_WARN("fail to get all table name", K(ret), K(exec_tenant_id));
-      } else if (OB_FAIL(exec_insert(sql_client, tenant_id, table_id,
-                                     table_name, dml, affected_rows))) {
-        LOG_WARN("exec insert failed", K(ret));
+      int64_t affected_rows = 0;
+      if (OB_FAIL(exec_insert(sql_client, exec_tenant_id, table_id, OB_ALL_TABLE_TNAME, dml, affected_rows))) {
+        LOG_WARN("exec insert failed", KR(ret), K(exec_tenant_id));
       } else if (!is_single_row(affected_rows) && !is_zero_row(affected_rows)) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("affected_rows unexpected to be one", K(affected_rows), K(ret));
+        LOG_WARN("affected_rows unexpected to be one", K(affected_rows), KR(ret));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(dml.set_default_columns("is_deleted", "0"))) {
+        LOG_WARN("add column failed", KR(ret));
+      } else if (OB_FAIL(exec_dml(sql_client, exec_tenant_id, OB_ALL_TABLE_HISTORY_TNAME, dml,
+              1/*target_affected_row_count*/))) {
+        LOG_WARN("execute insert failed", KR(ret), K(exec_tenant_id));
+      }
+    }
+    if (OB_SUCC(ret) && only_history) {
+      if (OB_FAIL(check_table_history_matched_(
+          sql_client, tenant_id, table_id, table.get_schema_version()))) {
+        LOG_WARN("fail to check if table history matched", KR(ret),
+                 K(tenant_id), K(table_id), "schema_version", table.get_schema_version());
       }
     }
   }
 
-  if (OB_SUCC(ret)) {
-    const int64_t is_deleted = 0;
-    const char *table_name = NULL;
-    if (OB_FAIL(ObSchemaUtils::get_all_table_history_name(exec_tenant_id, table_name))) {
-      LOG_WARN("fail to get all table name", KR(ret), K(exec_tenant_id));
-    } else if (OB_FAIL(dml.add_column("is_deleted", is_deleted))) {
-      LOG_WARN("add column failed", KR(ret));
-    } else if (OB_FAIL(exec.exec_insert(table_name, dml, affected_rows))) {
-      LOG_WARN("execute insert failed", KR(ret));
-    } else if (!is_single_row(affected_rows)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("affected_rows unexpected to be one", K(affected_rows), KR(ret));
+  return ret;
+}
+
+int ObTableSqlService::add_table_dml(const ObTableSchema &table,
+    const bool update_object_status_ignore_version,
+    ObDMLSqlSplicer &all_table_dml)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = table.get_tenant_id();
+  const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
+  if (OB_FAIL(check_ddl_allowed(table))) {
+    LOG_WARN("check ddl allowd failed", KR(ret), K(table));
+  } else if (OB_FAIL(gen_table_dml(exec_tenant_id, table,
+          update_object_status_ignore_version, all_table_dml))) {
+    LOG_WARN("gen table dml failed", KR(ret));
+  }
+  return ret;
+}
+
+int ObTableSqlService::batch_add_table_for_create_table(common::ObISQLClient &sql_client,
+    const ObIArray<ObTableSchema> &tables)
+{
+  int ret = OB_SUCCESS;
+  if (tables.empty()) {
+  } else {
+    ObDMLSqlSplicer dml;
+    common::ObTimeGuard time_guard("batch_add_table_for_create_table", 1_ms);
+    const uint64_t tenant_id = tables.at(0).get_tenant_id();
+    for (int64_t i = 0; i < tables.count() && OB_SUCC(ret); i++) {
+      const ObTableSchema &table = tables.at(i);
+      if (table.get_tenant_id() != tenant_id) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tenant id not same", KR(ret), K(table), K(tenant_id));
+      } else if (OB_FAIL(add_table_dml(table, false/*update_object_status_ignore_version*/, dml))) {
+        ObCStringHelper helper;
+        LOG_WARN("insert table schema failed, ", KR(ret), "table", helper.convert(table));
+      } else if (OB_FAIL(dml.finish_row())) {
+        LOG_WARN("failed to finish_row", KR(ret));
+      }
+    }
+    time_guard.click("generate_dml");
+    if (FAILEDx(exec_dml(sql_client, tenant_id, OB_ALL_TABLE_TNAME, dml, tables.count()))) {
+      LOG_WARN("failed to insert all_table", KR(ret), K(tenant_id), K(tables.count()));
+    } else if (FALSE_IT(time_guard.click("insert_all_table"))) {
+    } else if (OB_FAIL(dml.set_default_columns("is_deleted", "0"))) {
+      LOG_WARN("failed to set default columns", KR(ret));
+    } else if (OB_FAIL(exec_dml(sql_client, tenant_id, OB_ALL_TABLE_HISTORY_TNAME, dml, tables.count()))) {
+      LOG_WARN("failed to insert all_table_history", KR(ret), K(tenant_id), K(tables.count()));
+    } else if (FALSE_IT(time_guard.click("insert_all_table_history"))) {
     }
   }
-
-  if (OB_SUCC(ret) && only_history) {
-    if (OB_FAIL(check_table_history_matched_(
-        sql_client, tenant_id, table_id, table.get_schema_version()))) {
-      LOG_WARN("fail to check if table history matched", KR(ret),
-               K(tenant_id), K(table_id), "schema_version", table.get_schema_version());
-    }
-  }
-
   return ret;
 }
 
@@ -2141,8 +2180,8 @@ int ObTableSqlService::check_table_history_matched_(
         ObSqlString sql;
         common::sqlclient::ObMySQLResult *result = NULL;
         if (OB_FAIL(sql.assign_fmt(
-            "SELECT %s FROM %s WHERE tenant_id = 0 AND table_id = %lu AND schema_version = %ld"
-            " EXCEPT SELECT %s FROM %s WHERE tenant_id = 0 AND table_id = %lu",
+            "SELECT %s FROM %s WHERE table_id = %lu AND schema_version = %ld"
+            " EXCEPT SELECT %s FROM %s WHERE table_id = %lu",
             column_sql.ptr(), OB_ALL_TABLE_HISTORY_TNAME, table_id, schema_version,
             column_sql.ptr(), OB_ALL_TABLE_TNAME, table_id))) {
           LOG_WARN("fail to assign fmt", KR(ret), K(tenant_id), K(table_id), K(schema_version));
@@ -2297,9 +2336,7 @@ int ObTableSqlService::delete_single_constraint(
   ObDMLSqlSplicer dml;
   if (OB_FAIL(check_ddl_allowed(new_table_schema))) {
     LOG_WARN("check ddl allowd failed", K(ret), K(new_table_schema));
-  } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, table_id)))
       || OB_FAIL(dml.add_pk_column("constraint_id", constraint_id))) {
     LOG_WARN("add constraint failed", K(ret));
@@ -2323,10 +2360,9 @@ int ObTableSqlService::delete_single_constraint(
   if (OB_SUCC(ret)) {
     const int64_t is_deleted = 1;
     if (OB_FAIL(sql.assign_fmt(
-        "INSERT INTO %s (TENANT_ID, TABLE_ID, CONSTRAINT_ID, SCHEMA_VERSION, IS_DELETED) values "
-        "(%lu, %lu, %lu, %ld, %ld)",
+        "INSERT INTO %s (TABLE_ID, CONSTRAINT_ID, SCHEMA_VERSION, IS_DELETED) values "
+        "(%lu, %lu, %ld, %ld)",
         OB_ALL_CONSTRAINT_HISTORY_TNAME,
-        ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
         ObSchemaUtils::get_extract_schema_id(exec_tenant_id, orig_constraint.get_table_id()),
         orig_constraint.get_constraint_id(),
         new_schema_version,
@@ -2350,9 +2386,7 @@ int ObTableSqlService::delete_single_constraint(
          OB_SUCC(ret) && (cst_col_iter != constraint->cst_col_end());
          ++cst_col_iter) {
       dml.reset();
-      if (OB_FAIL(dml.add_pk_column("tenant_id",
-                  ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-          || OB_FAIL(dml.add_pk_column("table_id",
+      if (OB_FAIL(dml.add_pk_column("table_id",
              ObSchemaUtils::get_extract_schema_id(exec_tenant_id,
                                                   orig_constraint.get_table_id())))
           || OB_FAIL(dml.add_pk_column("constraint_id", orig_constraint.get_constraint_id()))
@@ -2406,9 +2440,7 @@ int ObTableSqlService::delete_single_column(
   ObDMLSqlSplicer dml;
   if (OB_FAIL(check_ddl_allowed(new_table_schema))) {
     LOG_WARN("check ddl allowd failed", K(ret), K(new_table_schema));
-  } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, table_id)))
       || OB_FAIL(dml.add_pk_column("column_id", column_id))) {
     LOG_WARN("add column failed", K(ret));
@@ -2436,10 +2468,9 @@ int ObTableSqlService::delete_single_column(
   if (OB_SUCC(ret)) {
     const int64_t is_deleted = 1;
     if (OB_FAIL(sql.assign_fmt(
-        "INSERT INTO %s (TENANT_ID, TABLE_ID, COLUMN_ID, SCHEMA_VERSION, IS_DELETED) values "
-        "(%lu, %lu, %lu, %ld, %ld)",
+        "INSERT INTO %s (TABLE_ID, COLUMN_ID, SCHEMA_VERSION, IS_DELETED) values "
+        "(%lu, %lu, %ld, %ld)",
         OB_ALL_COLUMN_HISTORY_TNAME,
-        ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
         ObSchemaUtils::get_extract_schema_id(exec_tenant_id, orig_column_schema.get_table_id()),
         orig_column_schema.get_column_id(),
         new_schema_version,
@@ -2470,6 +2501,168 @@ int ObTableSqlService::delete_single_column(
   return ret;
 }
 
+bool ObTableSqlService::table_need_sync_schema_version(const ObTableSchema &table)
+{
+  return (table.is_index_table() || table.is_mlog_table()
+          || table.is_aux_vp_table() || table.is_aux_lob_table());
+}
+
+int ObTableSqlService::inner_create_sys_table(ObTableSchema &table,
+    ObSchemaOperation &opt,
+    const bool need_sync_schema_version,
+    common::ObISQLClient &sql_client)
+{
+  int ret = OB_SUCCESS;
+  common::ObTimeGuard time_guard("inner_create_sys_table", 1_ms);
+  const bool update_object_status_ignore_version = false;
+  const bool only_history = false;
+  // add __all_table/__all_column with its history, __all_ddl_operation/__all_core_table
+  if (!is_sys_table(table.get_table_id())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("this function should only be called with sys table", KR(ret), K(table), K(lbt()));
+  } else if (OB_FAIL(add_table(sql_client, table, update_object_status_ignore_version, only_history))) {
+    LOG_WARN("failed to add table", KR(ret));
+  } else if (FALSE_IT(time_guard.click("add_table"))) {
+  } else if (OB_FAIL(add_columns(sql_client, table))) {
+    LOG_WARN("failed to add columns", KR(ret));
+  } else if (FALSE_IT(time_guard.click("add_columns"))) {
+  } else if (OB_FAIL(log_operation_wrapper(opt, sql_client))) {
+    LOG_WARN("failed to add ddl operation", KR(ret), K(opt));
+  } else if (FALSE_IT(time_guard.click("add_ddl_operation"))) {
+  } else if (need_sync_schema_version && table_need_sync_schema_version(table)) {
+    if (OB_FAIL(update_data_table_schema_version(sql_client, table.get_tenant_id(),
+            table.get_data_table_id(), table.get_in_offline_ddl_white_list()))) {
+      LOG_WARN("fail to update schema_version", KR(ret));
+    }
+    time_guard.click("sync_schema_version");
+  }
+  return ret;
+}
+
+int ObTableSqlService::batch_create_table(ObIArray<ObTableSchema> &tables,
+    common::ObISQLClient &sql_client,
+    const common::ObString *ddl_stmt_str,
+    const bool sync_schema_version_for_last_table,
+    const bool is_truncate_table)
+{
+  int ret = OB_SUCCESS;
+  common::ObTimeGuard time_guard("batch_create_table", 10_ms);
+  int64_t start_usec = ObTimeUtility::current_time();
+  int64_t end_usec = 0;
+  int64_t cost_usec = 0;
+  if (tables.empty()) {
+  } else {
+    ObDMLSqlSplicer ddl_operation_dml;
+    ObDMLSqlSplicer ddl_id_dml;
+    const uint64_t tenant_id = tables.at(0).get_tenant_id();
+    const bool has_sys_table = is_sys_table(tables.at(0).get_table_id());
+    const bool update_object_status_ignore_version = false;
+    // generate dmls
+    for (int64_t i = 0; i < tables.count() && OB_SUCC(ret); i++) {
+      ObTableSchema &table = tables.at(i);
+      int64_t tmp = 0;
+      if (OB_FAIL(table.check_valid(true/*count by byte*/))) {
+        LOG_WARN("invalid create table argument, ", KR(ret), K(table));
+      } else if (table.get_tenant_id() != tenant_id) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tenant id not equal", KR(ret), K(tenant_id), K(table));
+      } else if (OB_FAIL(check_ddl_allowed(table))) {
+        LOG_WARN("check ddl allowd failed", KR(ret), K(table));
+      } else if (table.is_view_table() && !table.is_sys_view()
+          && !table.is_force_view() && table.get_column_count() <= 0) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get wrong view schema", KR(ret), K(table));
+      } else if (has_sys_table != is_sys_table(tables.at(i).get_table_id())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("sys table should not be created with user table", KR(ret), K(table));
+      } else if (table.is_force_view()
+          && table.get_column_count() <= 0
+          && FALSE_IT(table.set_object_status(ObObjectStatus::INVALID))) {
+      } else if (table.is_view_table() && table.get_column_count() > 0
+          && FALSE_IT(table.set_view_column_filled_flag(ObViewColumnFilledFlag::FILLED))) {
+      }
+      // add ddl operation
+      ObSchemaOperation opt;
+      opt.tenant_id_ = tenant_id;
+      opt.database_id_ = table.get_database_id();
+      opt.tablegroup_id_ = table.get_tablegroup_id();
+      opt.table_id_ = table.get_table_id();
+      if (is_truncate_table) {
+        opt.op_type_ = OB_DDL_TRUNCATE_TABLE_CREATE;
+      } else {
+        if (table.is_index_table()) {
+          opt.op_type_ = table.is_global_index_table() ? OB_DDL_CREATE_GLOBAL_INDEX : OB_DDL_CREATE_INDEX;
+        } else if (table.is_view_table()){
+          opt.op_type_ = OB_DDL_CREATE_VIEW;
+        } else {
+          opt.op_type_ = OB_DDL_CREATE_TABLE;
+        }
+      }
+      opt.schema_version_ = table.get_schema_version();
+      opt.ddl_stmt_str_ = (i == 0 && OB_NOT_NULL(ddl_stmt_str)) ? *ddl_stmt_str : ObString();
+      if (OB_FAIL(ret)) {
+      } else if (is_sys_table(table.get_table_id())) {
+        if (OB_FAIL(inner_create_sys_table(table, opt,
+                (sync_schema_version_for_last_table && i + 1 == tables.count()), sql_client))) {
+          LOG_WARN("failed to inner create core table", KR(ret));
+        }
+      } else {
+        // for user table
+        // add ddl operation
+        if (OB_FAIL(log_operation_dml(opt, ddl_operation_dml, ddl_id_dml))) {
+          LOG_WARN("log operation failed", K(opt), KR(ret));
+        }
+      }
+    }
+    time_guard.click("log_operation");
+    if (OB_FAIL(ret) || has_sys_table) {
+    } else if (OB_FAIL(batch_add_sequence_for_create_table(sql_client, tables))) {
+      LOG_WARN("failed to batch add sequence for create table", KR(ret), K(tables));
+    } else if (FALSE_IT(time_guard.click("insert_auto_increment"))) {
+    } else if (OB_FAIL(batch_add_table_for_create_table(sql_client, tables))) {
+      LOG_WARN("failed to batch add table for create table", KR(ret), K(tables));
+    } else if (FALSE_IT(time_guard.click("insert_all_table"))) {
+    } else if (OB_FAIL(batch_add_columns_for_create_table(sql_client, tables))) {
+      LOG_WARN("failed to batch add columns for create table", KR(ret), K(tables));
+    } else if (FALSE_IT(time_guard.click("insert_all_column"))) {
+    } else if (OB_FAIL(batch_add_column_groups_for_create_table(sql_client, tables))) {
+      LOG_WARN("failed to batch add column groups for create table", KR(ret), K(tables));
+    } else if (FALSE_IT(time_guard.click("insert_all_column_group"))) {
+    } else if (OB_FAIL(batch_add_constraints_for_create_table(sql_client, tables))) {
+      LOG_WARN("failed to batch add constraints for create table", KR(ret), K(tables));
+    } else if (FALSE_IT(time_guard.click("insert_all_cst"))) {
+    } else if (OB_FAIL(batch_add_table_part_info(sql_client, tables))) {
+      LOG_WARN("failed to add table part info", KR(ret));
+    } else if (FALSE_IT(time_guard.click("add_table_part_info"))) {
+    } else if (OB_FAIL(exec_dml(sql_client, tenant_id, OB_ALL_DDL_OPERATION_TNAME, ddl_operation_dml,
+            tables.count()))) {
+      LOG_WARN("log operation failed", KR(ret), K(tenant_id));
+    } else if (FALSE_IT(time_guard.click("insert_all_ddl_operation"))) {
+    } else if (OB_FAIL(exec_dml(sql_client, tenant_id, OB_ALL_DDL_ID_TNAME, ddl_id_dml))) {
+      LOG_WARN("log operation failed", KR(ret), K(tenant_id));
+    } else if (FALSE_IT(time_guard.click("insert_all_ddl_id"))) {
+    } else {
+      ObTableSchema &last_table = tables.at(tables.count() - 1);
+      for (int64_t i = 0; i < tables.count() && OB_SUCC(ret); i++) {
+        if (is_inner_table(tables.at(i).get_table_id())) {
+        } else if (OB_FAIL(add_foreign_key(sql_client, tables.at(i), false/*only_history*/))) {
+          LOG_WARN("failed to add foreign key", KR(ret), K(tables.at(i)));
+        }
+      }
+      time_guard.click("add_foreign_key");
+      if (OB_FAIL(ret)) {
+      } else if (sync_schema_version_for_last_table && table_need_sync_schema_version(last_table)) {
+        if (OB_FAIL(update_data_table_schema_version(sql_client, tenant_id,
+            last_table.get_data_table_id(), last_table.get_in_offline_ddl_white_list()))) {
+          LOG_WARN("fail to update schema_version", KR(ret));
+        }
+        time_guard.click("update_data_table_schema_version");
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTableSqlService::create_table(ObTableSchema &table,
                                     ObISQLClient &sql_client,
                                     const ObString *ddl_stmt_str/*=NULL*/,
@@ -2477,138 +2670,12 @@ int ObTableSqlService::create_table(ObTableSchema &table,
                                     const bool is_truncate_table /*false*/)
 {
   int ret = OB_SUCCESS;
-  int64_t start_usec = ObTimeUtility::current_time();
-  int64_t end_usec = 0;
-  int64_t cost_usec = 0;
-  const uint64_t tenant_id = table.get_tenant_id();
-
-  lib::Worker::CompatMode compat_mode = lib::Worker::CompatMode::INVALID;
-  if (OB_FAIL(ObCompatModeGetter::get_table_compat_mode(tenant_id, table.get_table_id(), compat_mode))) {
-      LOG_WARN("fail to get table compat mode", K(ret));
-  }
-  lib::CompatModeGuard compat_mode_guard(compat_mode);
-
-  if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(table.check_valid(true/*count by byte*/))) {
-    LOG_WARN("invalid create table argument, ", K(table));
-  } else if (OB_FAIL(check_ddl_allowed(table))) {
-    LOG_WARN("check ddl allowd failed", K(ret), K(table));
-  }
-  if (OB_SUCCESS == ret && 0 != table.get_autoinc_column_id()) {
-    if (OB_FAIL(add_sequence(sql_client, tenant_id, table.get_table_id(),
-                             table.get_autoinc_column_id(), table.get_auto_increment(),
-                             table.get_truncate_version()))) {
-      LOG_WARN("insert sequence record faild", K(ret), K(table));
-    }
-    end_usec = ObTimeUtility::current_time();
-    cost_usec = end_usec - start_usec;
-    start_usec = end_usec;
-    LOG_INFO("add_sequence for autoinc cost: ", K(cost_usec));
-  }
-
-  bool only_history = false;
-  const bool update_object_status_ignore_version = false;
-  if (OB_FAIL(ret)) {
-  } else if (table.is_view_table()
-             && !table.is_sys_view()
-             && !table.is_force_view() && table.get_column_count() <= 0) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get wrong view schema", K(ret), K(table));
-  } else if (table.is_force_view()
-             && table.get_column_count() <= 0
-             && FALSE_IT(table.set_object_status(ObObjectStatus::INVALID))) {
-  } else if (table.is_view_table()
-             && table.get_column_count() > 0
-             && FALSE_IT(table.set_view_column_filled_flag(ObViewColumnFilledFlag::FILLED))) {
-  } else if (OB_FAIL(add_table(sql_client, table, update_object_status_ignore_version, only_history))) {
-    LOG_WARN("insert table schema failed, ", K(ret), K(table));
-  }
-  if (OB_FAIL(ret)) {
-    //do nothing
-  } else if (!table.is_view_table()) {
-    end_usec = ObTimeUtility::current_time();
-    cost_usec = end_usec - start_usec;
-    start_usec = end_usec;
-    LOG_INFO("add_table cost: ", K(cost_usec));
-    if (OB_FAIL(add_columns(sql_client, table))) {
-      LOG_WARN("insert column schema failed, ", K(ret), K(table));
-    } else if (OB_FAIL(add_constraints(sql_client, table))) {
-      LOG_WARN("insert constraint schema failed, ", K(ret), K(table));
-    }
-    end_usec = ObTimeUtility::current_time();
-    cost_usec = end_usec - start_usec;
-    start_usec = end_usec;
-    LOG_INFO("add_column cost: ", K(cost_usec));
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(add_table_part_info(sql_client, table))) {
-        LOG_WARN("fail to add_table_part_info", K(ret));
-      }
-      end_usec = ObTimeUtility::current_time();
-      cost_usec = end_usec - start_usec;
-      start_usec = end_usec;
-      LOG_INFO("add part info cost: ", K(cost_usec));
-    }
-    // insert into all_foreign_key.
-    if (OB_SUCC(ret) && !is_inner_table(table.get_table_id())) {
-      if (OB_FAIL(add_foreign_key(sql_client, table, false/* only_history */))) {
-        LOG_WARN("failed to add foreign key", K(ret));
-      }
-    }
-  } else if (table.view_column_filled() //view table
-             && OB_FAIL(add_columns(sql_client, table))) {
-    LOG_WARN("insert column schema failed, ", K(ret), K(table));
-  }
-
-  if (FAILEDx(add_column_groups(sql_client, table, table.get_schema_version()))) {
-    LOG_WARN("fail to add column groups", KR(ret), K(table));
-  }
-
-  ObSchemaOperation opt;
-  opt.tenant_id_ = tenant_id;
-  opt.database_id_ = table.get_database_id();
-  opt.tablegroup_id_ = table.get_tablegroup_id();
-  opt.table_id_ = table.get_table_id();
-  if (is_truncate_table) {
-    opt.op_type_ = OB_DDL_TRUNCATE_TABLE_CREATE;
-  } else {
-    if (table.is_index_table()) {
-      opt.op_type_ = table.is_global_index_table() ? OB_DDL_CREATE_GLOBAL_INDEX : OB_DDL_CREATE_INDEX;
-    } else if (table.is_view_table()){
-      opt.op_type_ = OB_DDL_CREATE_VIEW;
-    } else {
-      opt.op_type_ = OB_DDL_CREATE_TABLE;
-    }
-  }
-  opt.schema_version_ = table.get_schema_version();
-  opt.ddl_stmt_str_ = ddl_stmt_str ? *ddl_stmt_str : ObString();
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(log_operation_wrapper(opt, sql_client))) {
-      LOG_WARN("log operation failed", K(opt), K(ret));
-    }
-    if (OB_SUCC(ret)) {
-      end_usec = ObTimeUtility::current_time();
-      cost_usec = end_usec - start_usec;
-      start_usec = end_usec;
-      LOG_INFO("log_operation cost: ", K(cost_usec));
-    }
-
-    if (OB_SUCC(ret)) {
-      LOG_DEBUG("add table", "table type", table.get_table_type(), "index type", table.get_index_type());
-      if ((table.is_index_table()
-          || table.is_aux_vp_table()
-          || table.is_aux_lob_table()
-          || table.is_mlog_table())
-          && need_sync_schema_version) {
-        if (OB_FAIL(update_data_table_schema_version(sql_client, tenant_id,
-            table.get_data_table_id(), table.get_in_offline_ddl_white_list()))) {
-          LOG_WARN("fail to update schema_version", K(ret));
-        }
-        end_usec = ObTimeUtility::current_time();
-        cost_usec = end_usec - start_usec;
-        start_usec = end_usec;
-        LOG_INFO("update_data_table_schema_version cost: ", K(cost_usec));
-      }
-    }
+  ObSEArray<ObTableSchema, 1> tables;
+  if (OB_FAIL(tables.push_back(table))) {
+    LOG_WARN("failed to push_back tables", KR(ret), K(table));
+  } else if (OB_FAIL(batch_create_table(tables, sql_client, ddl_stmt_str, need_sync_schema_version, is_truncate_table))) {
+    LOG_WARN("failed to batch create table", KR(ret), K(tables), K(ddl_stmt_str),
+        K(need_sync_schema_version), K(is_truncate_table));
   }
   return ret;
 }
@@ -2638,9 +2705,7 @@ int ObTableSqlService::update_index_status(
     LOG_WARN("update data table schema version failed", K(ret));
   } else {
     ObDMLSqlSplicer dml;
-    if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                               exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+    if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                  exec_tenant_id, index_table_id)))
         || OB_FAIL(dml.add_column("schema_version", new_schema_version))
         || OB_FAIL(dml.add_column("index_status", status))
@@ -2713,9 +2778,7 @@ int ObTableSqlService::update_index_type(const ObTableSchema &data_table_schema,
     LOG_WARN("invalid argument", K(ret), K(index_table_id));
   } else if (OB_FAIL(check_ddl_allowed(data_table_schema))) {
     LOG_WARN("check ddl allowd failed", K(ret), K(data_table_schema));
-  } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                                    exec_tenant_id, tenant_id)))
-            || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                     exec_tenant_id, index_table_id)))
             || OB_FAIL(dml.add_column("schema_version", new_schema_version))
             || OB_FAIL(dml.add_column("index_type", index_type))) {
@@ -2780,9 +2843,7 @@ int ObTableSqlService::update_mlog_status(const ObTableSchema &data_table_schema
     LOG_WARN("check ddl allowd failed", K(ret), K(data_table_schema));
   } else if (OB_FAIL(ObSchemaUtils::get_all_table_name(exec_tenant_id, table_name))) {
     LOG_WARN("fail to get all table name", K(ret), K(exec_tenant_id));
-  } else if (OB_FAIL(dml.add_pk_column(
-                 "tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id))) ||
-             OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                        exec_tenant_id, mlog_table_id))) ||
              OB_FAIL(dml.add_column("schema_version", new_schema_version)) ||
              OB_FAIL(dml.add_column("table_name", new_name))) {
@@ -2844,9 +2905,7 @@ int ObTableSqlService::update_mview_status(
   uint64_t mview_table_id = mview_table_schema.get_table_id();
   int64_t new_schema_version = mview_table_schema.get_schema_version();
   ObDMLSqlSplicer dml;
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, mview_table_id)))
       || OB_FAIL(dml.add_column("schema_version", new_schema_version))
       || OB_FAIL(dml.add_column("table_mode", table_mode_struct.mode_))) {
@@ -2918,8 +2977,6 @@ int ObTableSqlService::update_mview_reference_table_status(
   int64_t mv_mode = table_schema.get_mv_mode();
   ObDMLSqlSplicer dml;
   if (OB_FAIL(dml.add_pk_column(
-                 "tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id))) ||
-             OB_FAIL(dml.add_pk_column(
                  "table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id))) ||
              OB_FAIL(dml.add_column("schema_version", new_schema_version)) ||
              OB_FAIL(dml.add_column("table_mode", table_mode_struct.mode_)) ||
@@ -3102,9 +3159,7 @@ int ObTableSqlService::gen_table_dml_without_check(
   if (table.is_materialized_view()
       && OB_FAIL(table.get_local_session_var().gen_local_session_var_str(allocator, local_session_var))) {
     LOG_WARN("fail to gen local session var str", K(ret));
-  } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-            exec_tenant_id, table.get_tenant_id())))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
             exec_tenant_id, table.get_table_id())))
       || OB_FAIL(dml.add_column("table_name", ObHexEscapeSqlStr(table.get_table_name())))
       || OB_FAIL(dml.add_column("database_id", ObSchemaUtils::get_extract_schema_id(
@@ -3323,9 +3378,7 @@ int ObTableSqlService::gen_partition_option_dml(const ObTableSchema &table, ObDM
                                sub_part_option.get_part_num() : 0;
   if (OB_FAIL(check_ddl_allowed(table))) {
     LOG_WARN("check ddl allowd failed", K(ret), K(table));
-  } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, table_id)))
       || OB_FAIL(dml.add_column("part_level", table.get_part_level()))
       || OB_FAIL(dml.add_column("part_func_type", part_option.get_part_func_type()))
@@ -3483,9 +3536,7 @@ int ObTableSqlService::update_all_part_for_subpart(ObISQLClient &sql_client,
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("inc_part_array[i] is NULL", K(ret), K(i));
       } else {
-        if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                                   exec_tenant_id, tenant_id)))
-            || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+        if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                      exec_tenant_id, table_id)))
             || OB_FAIL(dml.add_pk_column("part_id", inc_part->get_part_id()))
             || OB_FAIL(dml.add_column("sub_part_num", inc_part->get_sub_part_num()))
@@ -3577,9 +3628,7 @@ int ObTableSqlService::delete_from_all_table(
   int ret = OB_SUCCESS;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
   ObDMLSqlSplicer dml;
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else {
@@ -3606,8 +3655,7 @@ int ObTableSqlService::delete_from_all_temp_table(ObISQLClient &sql_client,
   int ret = OB_SUCCESS;
   ObDMLSqlSplicer dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id)))) {
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else {
     int64_t affected_rows = 0;
@@ -3630,9 +3678,7 @@ int ObTableSqlService::delete_from_all_table_stat(ObISQLClient &sql_client,
   int ret = OB_SUCCESS;
   ObDMLSqlSplicer dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                  exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                      exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else {
@@ -3657,9 +3703,7 @@ int ObTableSqlService::delete_from_all_histogram_stat(ObISQLClient &sql_client,
   ObDMLSqlSplicer dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
 
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                  exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                      exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else {
@@ -3686,9 +3730,7 @@ int ObTableSqlService::delete_from_all_column(ObISQLClient &sql_client,
 
   ObDMLSqlSplicer dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else {
@@ -3714,9 +3756,7 @@ int ObTableSqlService::delete_from_all_column_stat(ObISQLClient &sql_client,
   ObDMLSqlSplicer dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
 
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                  exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                      exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else {
@@ -3741,9 +3781,7 @@ int ObTableSqlService::delete_column_stat(ObISQLClient &sql_client,
   int ret = OB_SUCCESS;
   ObDMLSqlSplicer del_stat_dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  if (OB_FAIL(del_stat_dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                            exec_tenant_id, tenant_id)))
-      || OB_FAIL(del_stat_dml.add_pk_column("table_id", table_id))
+  if (OB_FAIL(del_stat_dml.add_pk_column("table_id", table_id))
       || OB_FAIL(del_stat_dml.add_pk_column("column_id", column_id))) {
     LOG_WARN("add column failed", K(ret));
   } else {
@@ -3776,10 +3814,9 @@ int ObTableSqlService::delete_from_all_table_history(ObISQLClient &sql_client,
   } else if (OB_FAIL(ObSchemaUtils::get_all_table_history_name(exec_tenant_id, table_name))) {
     LOG_WARN("fail to get all table name", K(ret), K(exec_tenant_id));
   } else if (OB_FAIL(sql.assign_fmt(
-      "INSERT INTO %s(tenant_id,table_id,schema_version,data_table_id,is_deleted)"
-      " VALUES(%lu,%lu,%ld,%lu,%ld)",
+      "INSERT INTO %s(table_id,schema_version,data_table_id,is_deleted)"
+      " VALUES(%lu,%ld,%lu,%ld)",
       table_name,
-      ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, table_schema.get_tenant_id()),
       ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_schema.get_table_id()),
       new_schema_version,
       ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_schema.get_data_table_id()),
@@ -3806,7 +3843,7 @@ int ObTableSqlService::delete_from_all_column_history(ObISQLClient &sql_client,
   if (OB_FAIL(check_ddl_allowed(table_schema))) {
     LOG_WARN("check ddl allowd failed", K(ret), K(table_schema));
   } else if (OB_FAIL(sql.append_fmt("INSERT /*+use_plan_cache(none)*/ INTO %s "
-      "(TENANT_ID, TABLE_ID, COLUMN_ID, SCHEMA_VERSION, IS_DELETED) VALUES ",
+      "(TABLE_ID, COLUMN_ID, SCHEMA_VERSION, IS_DELETED) VALUES ",
       OB_ALL_COLUMN_HISTORY_TNAME))) {
     LOG_WARN("append_fmt failed", K(ret));
   }
@@ -3814,9 +3851,8 @@ int ObTableSqlService::delete_from_all_column_history(ObISQLClient &sql_client,
   int64_t affected_rows = 0;
   for (ObTableSchema::const_column_iterator iter = table_schema.column_begin();
       OB_SUCCESS == ret && iter != table_schema.column_end(); ++iter) {
-    if (OB_FAIL(sql.append_fmt("%s(%lu, %lu, %lu, %ld, %ld)",
+    if (OB_FAIL(sql.append_fmt("%s(%lu, %lu, %ld, %ld)",
         (iter == table_schema.column_begin()) ? "" : ",",
-        ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, (*iter)->get_tenant_id()),
         ObSchemaUtils::get_extract_schema_id(exec_tenant_id, (*iter)->get_table_id()),
         (*iter)->get_column_id(),
         new_schema_version, is_deleted))) {
@@ -3843,9 +3879,7 @@ int ObTableSqlService::delete_from_all_optstat_user_prefs(ObISQLClient &sql_clie
   ObDMLSqlSplicer dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
 
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                       exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                           exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else {
@@ -3888,9 +3922,7 @@ int ObTableSqlService::update_data_table_schema_version(
     if (FALSE_IT(table_schema.set_in_offline_ddl_white_list(in_offline_ddl_white_list))) {
     } else if (OB_FAIL(check_ddl_allowed(table_schema))) {
       LOG_WARN("check ddl allowd failed", K(ret), K(table_schema));
-    } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                                      exec_tenant_id, tenant_id)))
-          || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+    } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                    exec_tenant_id, data_table_id)))
           || OB_FAIL(dml.add_column("schema_version", new_schema_version))
           || OB_FAIL(dml.add_column("rowkey_column_num", table_schema.get_rowkey_column_num()))
@@ -3948,6 +3980,66 @@ int ObTableSqlService::update_data_table_schema_version(
   return ret;
 }
 
+int ObTableSqlService::add_sequence_dml(share::ObDMLSqlSplicer &dml,
+                                    const uint64_t tenant_id,
+                                    const uint64_t table_id,
+                                    const uint64_t column_id,
+                                    const uint64_t auto_increment,
+                                    const int64_t truncate_version)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t exec_tenant_id = tenant_id;
+  if (OB_FAIL(dml.add_pk_column("sequence_key", ObSchemaUtils::get_extract_schema_id(
+                                      exec_tenant_id, table_id)))) {
+    LOG_WARN("failed to add sequence_key", KR(ret), K(table_id));
+  } else if (OB_FAIL(dml.add_pk_column("column_id", column_id))) {
+    LOG_WARN("failed to add column_id", KR(ret), K(column_id));
+  } else if (OB_FAIL(dml.add_column("sequence_value", 0 == auto_increment ? 1 : share::ObRealUInt64(auto_increment)))) {
+    LOG_WARN("failed to add sequence_value", KR(ret), K(auto_increment));
+  } else if (OB_FAIL(dml.add_column("sync_value", 0 == auto_increment ? 0 : share::ObRealUInt64(auto_increment - 1)))) {
+    LOG_WARN("failed to add sync_value", KR(ret), K(auto_increment));
+  } else if (OB_FAIL(dml.add_column("truncate_version", truncate_version))) {
+    LOG_WARN("failed to add truncate_version", KR(ret), K(truncate_version));
+  } else if (OB_FAIL(dml.add_gmt_modified())) {
+    LOG_WARN("failed to add gmt_modified", KR(ret));
+  }
+  return ret;
+}
+
+int ObTableSqlService::batch_add_sequence_for_create_table(
+    common::ObISQLClient &sql_client,
+    const ObIArray<ObTableSchema> &tables)
+{
+  int ret = OB_SUCCESS;
+  if (tables.empty()) {
+  } else {
+    common::ObTimeGuard time_guard("batch_add_sequence_for_create_table", 1_ms);
+    ObDMLSqlSplicer dml;
+    const uint64_t tenant_id = tables.at(0).get_tenant_id();
+    for (int64_t i = 0; i < tables.count() && OB_SUCC(ret); i++) {
+      const ObTableSchema &table = tables.at(i);
+      if (table.get_tenant_id() != tenant_id) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tenant id not same", KR(ret), K(table), K(tenant_id));
+      } else if (0 == table.get_autoinc_column_id()) {
+      } else if (OB_FAIL(add_sequence_dml(dml, table.get_tenant_id(), table.get_table_id(),
+              table.get_autoinc_column_id(), table.get_auto_increment(),
+              table.get_truncate_version()))) {
+        LOG_WARN("failed to add sequence dml", KR(ret), K(table));
+      } else if (OB_FAIL(dml.finish_row())) {
+        LOG_WARN("failed to finish_row", KR(ret), K(table));
+      }
+    }
+    time_guard.click("generate_dml");
+    if (FAILEDx(exec_dml(sql_client, tenant_id, OB_ALL_AUTO_INCREMENT_TNAME, dml,
+            -1/*affected_rows -1 means not check*/, true/*insert_ignore*/))) {
+      LOG_WARN("failed to insert all_auto_increment", KR(ret), K(tenant_id));
+    }
+    time_guard.click("exec_sql");
+  }
+  return ret;
+}
+
 int ObTableSqlService::add_sequence(ObISQLClient &sql_client,
                                     const uint64_t tenant_id,
                                     const uint64_t table_id,
@@ -3956,38 +4048,16 @@ int ObTableSqlService::add_sequence(ObISQLClient &sql_client,
                                     const int64_t truncate_version)
 {
   int ret = OB_SUCCESS;
+  ObDMLSqlSplicer dml;
+  ObDMLExecHelper exec(sql_client, tenant_id);
   // FIXME:__all_time_zone contains auto increment column. Cyclic dependence may occur.
-  const uint64_t exec_tenant_id = tenant_id;
-  ObSqlString sql;
-  ObSqlString values;
-  if (OB_FAIL(sql.append_fmt("INSERT IGNORE INTO %s (", OB_ALL_AUTO_INCREMENT_TNAME))) {
-    LOG_WARN("append table name failed, ", K(ret));
-  } else {
-    SQL_COL_APPEND_VALUE(sql, values, ObSchemaUtils::get_extract_tenant_id(
-                                      exec_tenant_id, tenant_id), "tenant_id", "%lu");
-    SQL_COL_APPEND_VALUE(sql, values, ObSchemaUtils::get_extract_schema_id(
-                                      exec_tenant_id, table_id),  "sequence_key", "%lu");
-    SQL_COL_APPEND_VALUE(sql, values, column_id, "column_id", "%lu");
-    SQL_COL_APPEND_VALUE(sql, values, 0 == auto_increment ? 1 : auto_increment, "sequence_value", "%lu");
-    SQL_COL_APPEND_VALUE(sql, values, 0 == auto_increment ? 0 : auto_increment - 1, "sync_value", "%lu");
-    SQL_COL_APPEND_VALUE(sql, values, truncate_version, "truncate_version", "%ld");
-  }
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(sql.append_fmt(", gmt_modified) VALUES (%.*s, now(6))",
-            static_cast<int32_t>(values.length()), values.ptr()))) {
-      LOG_WARN("append sql failed, ", K(ret));
-    }
-  }
-  if (OB_SUCC(ret)) {
-    int64_t affected_rows = 0;
-    if (OB_FAIL(sql_client.write(exec_tenant_id, sql.ptr(), affected_rows))) {
-      LOG_WARN("fail to execute. ", "sql", sql.ptr(), K(ret));
-    } else {
-      if (!is_zero_row(affected_rows) && !is_single_row(affected_rows)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected value", K(affected_rows), "sql", sql.ptr(), K(ret));
-      }
-    }
+  if (OB_FAIL(add_sequence_dml(dml, tenant_id, table_id, column_id, auto_increment, truncate_version))) {
+    LOG_WARN("failed to add sequence dml", KR(ret), K(tenant_id), K(table_id), K(column_id), K(auto_increment), K(truncate_version));
+  } else if (OB_FAIL(dml.finish_row())) {
+    LOG_WARN("failed to finish_row", KR(ret));
+  } else if (OB_FAIL(exec_dml(sql_client, tenant_id, OB_ALL_AUTO_INCREMENT_TNAME, dml,
+          -1/*target_affected_row_count*/, true/*insert_ignore*/))) {
+    LOG_WARN("fail to execute", KR(ret), K(tenant_id));
   }
   return ret;
 }
@@ -4029,9 +4099,7 @@ int ObTableSqlService::sync_schema_version_for_history(
     const char *table_name = NULL;
     const bool only_history = true;
     const bool update_object_status_ignore_version = false;
-    if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                               exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+    if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                  exec_tenant_id, table_id)))
         || OB_FAIL(dml.add_column("schema_version", new_schema_version))) {
       LOG_WARN("add column failed", KR(ret));
@@ -4078,9 +4146,7 @@ int ObTableSqlService::update_tablegroup(ObSchemaGetterGuard &schema_guard,
   } else {
     if (OB_FAIL(check_table_options(new_table_schema))) {
       LOG_WARN("fail to check table option", K(ret), K(new_table_schema));
-    } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                               exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+    } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                  exec_tenant_id, new_table_schema.get_table_id())))
         || OB_FAIL(dml.add_column("schema_version", new_table_schema.get_schema_version()))
         || OB_FAIL(dml.add_column("tablegroup_id", ObSchemaUtils::get_extract_schema_id(
@@ -4215,9 +4281,7 @@ int ObTableSqlService::gen_column_dml_without_check(
         && OB_FAIL(column.get_local_session_var().gen_local_session_var_str(allocator, local_session_var))) {
       LOG_WARN("fail to gen local session var str", K(ret));
     }
-    if (OB_SUCC(ret) && (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                                    exec_tenant_id, column.get_tenant_id())))
-                         || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+    if (OB_SUCC(ret) && (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                     exec_tenant_id, column.get_table_id())))
                          || OB_FAIL(dml.add_pk_column("column_id", column.get_column_id()))
                          || OB_FAIL(dml.add_column("column_name", ObHexEscapeSqlStr(column.get_column_name())))
@@ -4281,9 +4345,7 @@ int ObTableSqlService::gen_constraint_dml(
     ObDMLSqlSplicer &dml)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, constraint.get_tenant_id())))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, constraint.get_table_id())))
       || OB_FAIL(dml.add_pk_column("constraint_id", constraint.get_constraint_id()))
       || OB_FAIL(dml.add_column("schema_version", constraint.get_schema_version()))
@@ -4309,9 +4371,7 @@ int ObTableSqlService::gen_constraint_column_dml(const uint64_t exec_tenant_id,
 {
   int ret = OB_SUCCESS;
 
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, constraint.get_tenant_id())))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, constraint.get_table_id())))
       || OB_FAIL(dml.add_pk_column("constraint_id", constraint.get_constraint_id()))
       || OB_FAIL(dml.add_pk_column("column_id", column_id))
@@ -4335,9 +4395,7 @@ int ObTableSqlService::gen_constraint_update_name_dml(
 {
   int ret = OB_SUCCESS;
 
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, constraint.get_tenant_id())))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, constraint.get_table_id())))
       || OB_FAIL(dml.add_pk_column("constraint_id", constraint.get_constraint_id()))
       || OB_FAIL(dml.add_column("schema_version", new_schema_version))
@@ -4362,9 +4420,7 @@ int ObTableSqlService::gen_constraint_insert_new_name_row_dml(
   int ret = OB_SUCCESS;
   const int64_t is_deleted = 0;
 
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, constraint.get_tenant_id())))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                exec_tenant_id, constraint.get_table_id())))
       || OB_FAIL(dml.add_pk_column("constraint_id", constraint.get_constraint_id()))
       || OB_FAIL(dml.add_column("schema_version", new_schema_version))
@@ -4395,21 +4451,74 @@ int ObTableSqlService::log_core_operation(
   return ret;
 }
 
+int ObTableSqlService::log_sys_operation(
+    common::ObISQLClient &sql_client,
+    const uint64_t tenant_id,
+    const int64_t schema_version)
+{
+  int ret = OB_SUCCESS;
+  ObGlobalStatProxy proxy(sql_client, tenant_id);
+  if (OB_FAIL(proxy.set_sys_schema_version(schema_version))) {
+    LOG_WARN("set_sys_schema_version failed", KR(ret), K(tenant_id),
+             "sys_schema_version", schema_version);
+  }
+  return ret;
+}
+
 int ObTableSqlService::add_table_part_info(ObISQLClient &sql_client,
                                            const ObTableSchema &table)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(check_ddl_allowed(table))) {
-    LOG_WARN("check ddl allowd failed", K(ret), K(table));
+    LOG_WARN("check ddl allowd failed", KR(ret), K(table));
   } else if (is_core_table(table.get_table_id())) {
     //do nothing
   } else if (is_inner_table(table.get_table_id())) {
     //do nothing
   } else {
     const ObPartitionSchema *table_schema = &table;
-    ObAddPartInfoHelper part_helper(table_schema, sql_client);
-    if (OB_FAIL(part_helper.add_partition_info())) {
-      LOG_WARN("add partition info failed", K(ret));
+    ObAddPartInfoHelper part_helper(sql_client, table.get_tenant_id());
+    if (OB_FAIL(part_helper.init(table_schema))) {
+      LOG_WARN("failed to init part_helper", KR(ret), KPC(table_schema));
+    } else if (OB_FAIL(part_helper.add_partition_info())) {
+      LOG_WARN("add partition info failed", KR(ret));
+    }
+  }
+  return ret;
+}
+
+int ObTableSqlService::batch_add_table_part_info(ObISQLClient &sql_client,
+                                           const ObIArray<ObTableSchema> &tables)
+{
+  int ret = OB_SUCCESS;
+  ObArray<const ObPartitionSchema *> partitions;
+  uint64_t tenant_id = OB_INVALID_TENANT_ID;
+  for (int64_t i = 0; i < tables.count() && OB_SUCC(ret); i++) {
+    const ObTableSchema &table = tables.at(i);
+    if (OB_FAIL(check_ddl_allowed(table))) {
+      LOG_WARN("check ddl allowd failed", KR(ret), K(table));
+    } else if (is_core_table(table.get_table_id())) {
+      //do nothing
+    } else if (is_inner_table(table.get_table_id())) {
+      //do nothing
+    } else if (!is_valid_tenant_id(table.get_tenant_id())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("invalid tenant id", KR(ret), K(table));
+    } else if (is_valid_tenant_id(tenant_id) && tenant_id != table.get_tenant_id()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("tenant_id not match", KR(ret), K(table), K(tenant_id));
+    } else if (OB_FAIL(partitions.push_back(&table))) {
+      LOG_WARN("failed to push_back table", KR(ret), K(table));
+    } else {
+      tenant_id = table.get_tenant_id();
+    }
+  }
+  if (OB_SUCC(ret) && !partitions.empty()) {
+    ObAddPartInfoHelper part_helper(sql_client, tenant_id);
+    if (OB_FAIL(part_helper.init(partitions))) {
+      LOG_WARN("failed to init part_helper", KR(ret), K(partitions));
+    } else if (OB_FAIL(part_helper.add_partition_info())) {
+      LOG_WARN("add partition info failed", KR(ret));
     }
   }
   return ret;
@@ -4592,10 +4701,63 @@ int ObTableSqlService::log_operation_wrapper(
     LOG_WARN("invalid schema_version", K(ret), K(schema_version));
   } else if (OB_FAIL(log_operation(opt, sql_client))) {
     LOG_WARN("failed to log operation", K(opt), K(ret));
-  } else if (is_core_table(table_id)) {
-    if (OB_FAIL(log_core_operation(sql_client, exec_tenant_id, schema_version))) {
+  } else {
+    // if core schema(core table and its index/lob table) changed, core_schema_version and sys_schema_version will both be modified
+    // if sys schema(sys table and its index/lob table) changed, sys_schema_version will be modified
+    if (is_core_table(table_id) && OB_FAIL(log_core_operation(sql_client, exec_tenant_id, schema_version))) {
       LOG_WARN("log_core_version failed", K(ret), K(exec_tenant_id), K(schema_version));
     }
+    if (OB_FAIL(ret)) {
+    } else if (is_sys_table(table_id) && OB_FAIL(log_sys_operation(sql_client, exec_tenant_id, schema_version))) {
+      LOG_WARN("log_sys_version failed", K(ret), K(exec_tenant_id), K(schema_version));
+    }
+  }
+  return ret;
+}
+
+int ObTableSqlService::batch_insert_ori_schema_version(
+    ObISQLClient &sql_client,
+    const uint64_t tenant_id,
+    const ObIArray<uint64_t> &table_ids,
+    const int64_t &ori_schema_version)
+{
+  int ret = OB_SUCCESS;
+
+  const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
+  int64_t affected_rows = 0;
+  int64_t row_count = 0;
+  ObSqlString insert_sql_string;
+  for (int64_t i = 0; i < table_ids.count() && OB_SUCC(ret); i++) {
+    const uint64_t table_id = table_ids.at(i);
+    if (is_inner_table(table_id)) {
+      // To avoid cyclic dependence, inner table won't record ori schema version
+    } else {
+      if (0 == row_count) {
+        if (OB_FAIL(insert_sql_string.append_fmt(
+              "INSERT INTO %s (TABLE_ID, ORI_SCHEMA_VERSION, gmt_create, gmt_modified) VALUES ",
+              OB_ALL_ORI_SCHEMA_VERSION_TNAME))) {
+          LOG_WARN("failed to append_fmt", KR(ret));
+        }
+      } else {
+        if (OB_FAIL(insert_sql_string.append(", "))) {
+          LOG_WARN("failed to append", KR(ret));
+        }
+      }
+      if (FAILEDx(insert_sql_string.append_fmt("(%lu, %ld, now(6), now(6))",
+              ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id),
+              ori_schema_version))) {
+        LOG_WARN("sql string append format string failed, ", KR(ret));
+      } else {
+        row_count++;
+      }
+    }
+  }
+  if (0 == row_count || OB_FAIL(ret)) {
+  } else if (OB_FAIL(sql_client.write(exec_tenant_id, insert_sql_string.ptr(), affected_rows))) {
+    LOG_WARN("execute sql failed,  ", "sql", insert_sql_string.ptr(), KR(ret));
+  } else if (row_count != affected_rows) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("affected_rows expect to 1, ", K(affected_rows), KR(ret));
   }
   return ret;
 }
@@ -4607,26 +4769,44 @@ int ObTableSqlService::insert_ori_schema_version(
     const int64_t &ori_schema_version)
 {
   int ret = OB_SUCCESS;
+  ObSEArray<uint64_t, 1> table_ids;
+  if (OB_FAIL(table_ids.push_back(table_id))) {
+    LOG_WARN("failed to push_back", KR(ret), K(table_id));
+  } else if (OB_FAIL(batch_insert_ori_schema_version(sql_client, tenant_id, table_ids, ori_schema_version))) {
+    LOG_WARN("failed to batch insert ori schema version", KR(ret), K(tenant_id), K(table_ids),
+        K(ori_schema_version));
+  }
+  return ret;
+}
 
+int ObTableSqlService::batch_insert_temp_table_info(
+    common::ObISQLClient &sql_client,
+    const ObIArray<ObTableSchema> &tables)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = tables.empty() ? OB_INVALID_TENANT_ID : tables.at(0).get_tenant_id();
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  int64_t affected_rows = 0;
-  ObSqlString insert_sql_string;
-  if (is_inner_table(table_id)) {
-    // To avoid cyclic dependence, inner table won't record ori schema version
-  } else if (OB_FAIL(insert_sql_string.append_fmt(
-      "INSERT INTO %s (TENANT_ID, TABLE_ID, ORI_SCHEMA_VERSION, gmt_create, gmt_modified) "
-      "values(%lu, %lu, %ld, now(6), now(6))",
-      OB_ALL_ORI_SCHEMA_VERSION_TNAME,
-      ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
-      ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id),
-      ori_schema_version))) {
-    LOG_WARN("sql string append format string failed, ", K(ret));
-  } else if (OB_FAIL(sql_client.write(exec_tenant_id, insert_sql_string.ptr(), affected_rows))) {
-    LOG_WARN("execute sql failed,  ", "sql", insert_sql_string.ptr(), K(ret));
-  } else if (1 != affected_rows) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("affected_rows expect to 1, ", K(affected_rows), K(ret));
-  } else {
+  ObDMLSqlSplicer dml;
+  int64_t row_count = 0;
+  for (int64_t i = 0; i < tables.count() && OB_SUCC(ret); i++) {
+    const ObTableSchema &table_schema = tables.at(i);
+    const uint64_t table_id = table_schema.get_table_id();
+    if (OB_FAIL(check_ddl_allowed(table_schema))) {
+      LOG_WARN("check ddl allowd failed", KR(ret), K(table_schema));
+    } else if (table_schema.is_ctas_tmp_table() || table_schema.is_tmp_table()) {
+      if (OB_FAIL(dml.add_pk_column("table_id", table_id))
+          || OB_FAIL(dml.add_column("create_host", table_schema.get_create_host_str()))) {
+        LOG_WARN("fail to add dml", KR(ret));
+      } else if (OB_FAIL(dml.finish_row())) {
+        LOG_WARN("failed to finish_row", KR(ret));
+      } else {
+        row_count++;
+      }
+    }
+  }
+  if (OB_FAIL(ret) || 0 == row_count) {
+  } else if (OB_FAIL(exec_dml(sql_client, exec_tenant_id, OB_ALL_TEMP_TABLE_TNAME, dml, row_count))) {
+    LOG_WARN("execute sql failed", KR(ret));
   }
   return ret;
 }
@@ -4634,27 +4814,11 @@ int ObTableSqlService::insert_ori_schema_version(
 int ObTableSqlService::insert_temp_table_info(ObISQLClient &sql_client, const ObTableSchema &table_schema)
 {
   int ret = OB_SUCCESS;
-  const uint64_t tenant_id = table_schema.get_tenant_id();
-  const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  const uint64_t table_id = table_schema.get_table_id();
-  int64_t affected_rows = 0;
-  ObSqlString insert_sql_string;
-  if (OB_FAIL(check_ddl_allowed(table_schema))) {
-    LOG_WARN("check ddl allowd failed", K(ret), K(table_schema));
-  } else if (table_schema.is_ctas_tmp_table() || table_schema.is_tmp_table()) {
-    if (OB_SUCCESS != (ret = insert_sql_string.append_fmt(
-        "INSERT INTO %s (TENANT_ID, TABLE_ID, CREATE_HOST) values(%lu, %lu, \"%.*s\")",
-        OB_ALL_TEMP_TABLE_TNAME,
-        ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
-        ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id),
-        table_schema.get_create_host_str().length(), table_schema.get_create_host_str().ptr()))) {
-      LOG_WARN("sql string append format string failed, ", K(ret));
-    } else if (OB_FAIL(sql_client.write(exec_tenant_id, insert_sql_string.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed,  ", "sql", insert_sql_string.ptr(), K(ret));
-    } else if (1 != affected_rows) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("affected_rows expect to 1, ", K(affected_rows), K(ret));
-    }
+  ObSEArray<ObTableSchema, 1> tables;
+  if (OB_FAIL(tables.push_back(table_schema))) {
+    LOG_WARN("failed to push_back table", KR(ret), K(table_schema));
+  } else if (OB_FAIL(batch_insert_temp_table_info(sql_client, tables))) {
+    LOG_WARN("failed to batch insert temp table info", KR(ret));
   }
   return ret;
 }
@@ -4666,9 +4830,7 @@ int ObTableSqlService::gen_foreign_key_dml(const uint64_t exec_tenant_id,
 {
   int ret = OB_SUCCESS;
   dml.reset();
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                             exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("foreign_key_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("foreign_key_id", ObSchemaUtils::get_extract_schema_id(
                                                      exec_tenant_id, foreign_key_info.foreign_key_id_)))
       || OB_FAIL(dml.add_column("foreign_key_name", ObHexEscapeSqlStr(foreign_key_info.foreign_key_name_)))
       || OB_FAIL(dml.add_column("child_table_id",  ObSchemaUtils::get_extract_schema_id(
@@ -4703,9 +4865,7 @@ int ObTableSqlService::gen_foreign_key_column_dml(
 {
   int ret = OB_SUCCESS;
   dml.reset();
-  if ( OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                              exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("foreign_key_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("foreign_key_id", ObSchemaUtils::get_extract_schema_id(
                                                      exec_tenant_id, foreign_key_id)))
       || OB_FAIL(dml.add_pk_column("child_column_id", child_column_id))
       || OB_FAIL(dml.add_pk_column("parent_column_id", parent_column_id))
@@ -4730,10 +4890,9 @@ int ObTableSqlService::delete_from_all_foreign_key(ObISQLClient &sql_client,
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
   // insert into __all_foreign_key_history
   if (OB_FAIL(sql.assign_fmt(
-      "INSERT INTO %s(tenant_id,foreign_key_id,schema_version,is_deleted,child_table_id,parent_table_id)"
-      " VALUES(%lu,%lu,%ld,%ld,%lu,%lu)",
+      "INSERT INTO %s(foreign_key_id,schema_version,is_deleted,child_table_id,parent_table_id)"
+      " VALUES(%lu,%ld,%ld,%lu,%lu)",
       OB_ALL_FOREIGN_KEY_HISTORY_TNAME,
-      ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
       ObSchemaUtils::get_extract_schema_id(exec_tenant_id, foreign_key_info.foreign_key_id_),
       new_schema_version, is_deleted,
       ObSchemaUtils::get_extract_schema_id(exec_tenant_id, foreign_key_info.child_table_id_),
@@ -4747,9 +4906,8 @@ int ObTableSqlService::delete_from_all_foreign_key(ObISQLClient &sql_client,
   }
   // delete from __all_foreign_key
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %lu AND foreign_key_id = %lu",
+    if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE foreign_key_id = %lu",
                               OB_ALL_FOREIGN_KEY_TNAME,
-                              ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                               ObSchemaUtils::get_extract_schema_id(exec_tenant_id, foreign_key_info.foreign_key_id_)))) {
       LOG_WARN("assign_fmt failed", K(ret));
     } else if (OB_FAIL(sql_client.write(exec_tenant_id, sql.ptr(), affected_rows))) {
@@ -4777,10 +4935,9 @@ int ObTableSqlService::delete_from_all_foreign_key_column(ObISQLClient &sql_clie
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
   // insert into __all_foreign_key_column_history
   if (OB_FAIL(sql.assign_fmt(
-      "INSERT INTO %s(tenant_id,foreign_key_id,child_column_id,parent_column_id,schema_version,is_deleted,position)"
-      " VALUES(%lu,%lu,%lu,%lu,%ld,%ld,%lu)",
+      "INSERT INTO %s(foreign_key_id,child_column_id,parent_column_id,schema_version,is_deleted,position)"
+      " VALUES(%lu,%lu,%lu,%ld,%ld,%lu)",
       OB_ALL_FOREIGN_KEY_COLUMN_HISTORY_TNAME,
-      ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
       ObSchemaUtils::get_extract_schema_id(exec_tenant_id, foreign_key_id),
       child_column_id, parent_column_id, new_schema_version, is_deleted, fk_column_pos))) {
     LOG_WARN("assign insert into __all_foreign_key_column_history fail", K(ret));
@@ -4792,9 +4949,8 @@ int ObTableSqlService::delete_from_all_foreign_key_column(ObISQLClient &sql_clie
   }
   if (OB_SUCC(ret)) {
     // delete from __all_foreign_key_column
-    if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %lu AND foreign_key_id = %lu AND child_column_id = %lu AND parent_column_id = %lu",
+    if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE foreign_key_id = %lu AND child_column_id = %lu AND parent_column_id = %lu",
                               OB_ALL_FOREIGN_KEY_COLUMN_TNAME,
-                              ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                               ObSchemaUtils::get_extract_schema_id(exec_tenant_id, foreign_key_id),
                               child_column_id, parent_column_id))) {
       LOG_WARN("assign_fmt failed", K(ret));
@@ -4873,8 +5029,7 @@ int ObTableSqlService::update_check_constraint_state(
         && !cst.get_is_modify_validate_flag() // nor validate attribute
         && !cst.get_is_modify_check_expr()) { // nor check constraint expr
       // do nothing
-    } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, cst.get_table_id())))
+    } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, cst.get_table_id())))
         || OB_FAIL(dml.add_pk_column("constraint_id", cst.get_constraint_id()))
         || OB_FAIL(dml.add_column("schema_version", cst.get_schema_version()))
         || OB_FAIL(dml.add_column("check_expr", ObHexEscapeSqlStr(cst.get_check_expr())))
@@ -5273,9 +5428,7 @@ int ObTableSqlService::update_table_schema_version(ObISQLClient &sql_client,
   ObDMLSqlSplicer dml;
   if (OB_FAIL(check_ddl_allowed(table_schema))) {
     LOG_WARN("check ddl allowd failed", K(ret), K(table_schema));
-  } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                                    exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  } else if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                  exec_tenant_id, table_id)))
         || OB_FAIL(dml.add_column("schema_version", table_schema.get_schema_version()))
         || OB_FAIL(dml.add_gmt_modified())) {
@@ -5339,9 +5492,7 @@ int ObTableSqlService::delete_from_all_column_usage(ObISQLClient &sql_client,
   ObDMLSqlSplicer dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
   int64_t affected_rows = 0;
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                  exec_tenant_id, tenant_id))) ||
-            OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                   exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else if (OB_FAIL(exec_delete(sql_client, tenant_id, table_id,
@@ -5361,9 +5512,7 @@ int ObTableSqlService::delete_from_all_monitor_modified(ObISQLClient &sql_client
   ObDMLSqlSplicer dml;
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
   int64_t affected_rows = 0;
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                  exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
+  if (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                   exec_tenant_id, table_id)))) {
     LOG_WARN("add column failed", K(ret));
   } else if (OB_NOT_NULL(extra_condition) &&
@@ -5373,6 +5522,119 @@ int ObTableSqlService::delete_from_all_monitor_modified(ObISQLClient &sql_client
                                  OB_ALL_MONITOR_MODIFIED_TNAME,
                                  dml, affected_rows))) {
     LOG_WARN("exec delete failed", K(ret));
+  }
+  return ret;
+}
+
+int ObTableSqlService::batch_add_column_groups_for_create_table(ObISQLClient &sql_client,
+                                                                const ObIArray<ObTableSchema> &tables)
+{
+  int ret = OB_SUCCESS;
+  if (tables.empty()) {
+  } else {
+    common::ObTimeGuard time_guard("batch_add_column_groups_for_create_table", 1_ms);
+    const uint64_t tenant_id = tables.at(0).get_tenant_id();
+    ObDMLSqlSplicer cg_dml;
+    ObDMLSqlSplicer cg_history_dml;
+    ObDMLSqlSplicer mapping_dml;
+    ObDMLSqlSplicer mapping_history_dml;
+    int64_t column_group_cnt = 0;
+    int64_t mapping_cnt = 0;
+    uint64_t data_version = 0;
+    if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
+      LOG_WARN("fail to get min data version", KR(ret), K(tenant_id));
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < tables.count(); i++) {
+      const ObTableSchema &table = tables.at(i);
+      if (table.get_tenant_id() != tenant_id) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tenant id not same", KR(ret), K(table), K(tenant_id));
+      } else if (OB_FAIL(append_column_group_dml_for_create_table(table,
+                  data_version, cg_dml, cg_history_dml, mapping_dml, mapping_history_dml,
+                  column_group_cnt, mapping_cnt))) {
+        ObCStringHelper helper;
+        LOG_WARN("append column group dml failed", KR(ret), "table", helper.convert(table));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      time_guard.click("generate_dml");
+      if (FAILEDx(exec_dml(sql_client, tenant_id, OB_ALL_COLUMN_GROUP_TNAME, cg_dml, column_group_cnt))) {
+        LOG_WARN("failed to insert all_column_group", KR(ret), K(tenant_id), K(column_group_cnt));
+      } else if (FALSE_IT(time_guard.click("insert_all_column_group"))) {
+      } else if (FAILEDx(exec_dml(sql_client, tenant_id, OB_ALL_COLUMN_GROUP_HISTORY_TNAME, cg_history_dml, column_group_cnt))) {
+        LOG_WARN("failed to insert all_column_group_history", KR(ret), K(tenant_id), K(column_group_cnt));
+      } else if (FALSE_IT(time_guard.click("insert_all_column_group_history"))) {
+      } else if (FAILEDx(exec_dml(sql_client, tenant_id, OB_ALL_COLUMN_GROUP_MAPPING_TNAME, mapping_dml, mapping_cnt))) {
+        LOG_WARN("failed to insert all_column_group_mapping", KR(ret), K(tenant_id), K(mapping_cnt));
+      } else if (FALSE_IT(time_guard.click("insert_all_column_group_mapping"))) {
+      } else if (FAILEDx(exec_dml(sql_client, tenant_id, OB_ALL_COLUMN_GROUP_MAPPING_HISTORY_TNAME, mapping_history_dml, mapping_cnt))) {
+        LOG_WARN("failed to insert all_column_group_mapping_history", KR(ret), K(tenant_id), K(mapping_cnt));
+      } else if (FALSE_IT(time_guard.click("insert_all_column_group_mapping_history"))) {
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTableSqlService::append_column_group_dml_for_create_table(const ObTableSchema &table,
+                                                                const uint64_t data_version,
+                                                                ObDMLSqlSplicer &cg_dml,
+                                                                ObDMLSqlSplicer &cg_history_dml,
+                                                                ObDMLSqlSplicer &mapping_dml,
+                                                                ObDMLSqlSplicer &mapping_history_dml,
+                                                                int64_t &column_group_cnt,
+                                                                int64_t &mapping_cnt)
+{
+  int ret = OB_SUCCESS;
+  if ((table.get_column_group_count() < 1)) {
+    // skip, no need to persist column_group
+  } else if (!table.is_column_store_supported()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("we can persist column_group info only when column_store=true", KR(ret), K(table));
+  } else {
+    const int64_t schema_version = table.get_schema_version();
+    ObTableSchema::const_column_group_iterator it_begin = table.column_group_begin();
+    ObTableSchema::const_column_group_iterator it_end = table.column_group_end();
+    for (; OB_SUCC(ret) && it_begin != it_end; ++it_begin) {
+      const ObColumnGroupSchema *column_group = *it_begin;
+      if (OB_ISNULL(column_group)) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("column_group schema should not be null", KR(ret), K(table));
+      } else if (OB_FAIL(gen_column_group_dml(table, *column_group, false /*not history*/,
+                                              false /*not deleted*/, schema_version, cg_dml))) {
+        LOG_WARN("fail to gen column_group_dml", KR(ret), K(table), KPC(column_group));
+      } else if (OB_FAIL(gen_column_group_dml(table, *column_group, true /*history*/,
+                                              false /*not deleted*/, schema_version, cg_history_dml))) {
+        LOG_WARN("fail to gen column_group_history_dml", KR(ret), K(table), KPC(column_group));
+      } else {
+        ++column_group_cnt;
+        const int64_t column_id_cnt = column_group->get_column_id_count();
+        if (column_id_cnt > 0) {
+          for (int64_t idx = 0; OB_SUCC(ret) && idx < column_id_cnt; ++idx) {
+            uint64_t tmp_column_id = UINT64_MAX;
+            if (OB_FAIL(column_group->get_column_id(idx, tmp_column_id))) {
+              LOG_WARN("fail to get column id", KR(ret), K(idx), KPC(column_group));
+            } else {
+              const int64_t column_id = static_cast<int64_t>(tmp_column_id);
+              if (OB_FAIL(gen_column_group_mapping_dml(table, *column_group,
+                      column_id, false /*not history*/,
+                      false /*not deleted*/, schema_version, mapping_dml))) {
+                LOG_WARN("fail to gen column_group_mapping_dml", KR(ret), K(table), K(column_id));
+              } else if (OB_FAIL(gen_column_group_mapping_dml(table, *column_group,
+                      column_id, true /*history*/,
+                      false /*not deleted*/, schema_version, mapping_history_dml))) {
+                LOG_WARN("fail to gen column_group_mapping_history_dml", KR(ret), K(table), K(column_id));
+              } else {
+                ++mapping_cnt;
+              }
+            }
+          }
+        } else if (column_group->get_column_group_type() != ObColumnGroupType::DEFAULT_COLUMN_GROUP) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("invalid column group type without column ids", KR(ret), KPC(column_group));
+        }
+      }
+    }
   }
   return ret;
 }
@@ -5572,8 +5834,7 @@ int ObTableSqlService::gen_column_group_dml(const ObTableSchema &table_schema,
     const uint64_t tmp_table_id = ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id);
     const uint64_t tmp_cg_id = ObSchemaUtils::get_extract_schema_id(exec_tenant_id, column_group_schema.get_column_group_id());
 
-    if (OB_FAIL(dml.add_pk_column("tenant_id", tmp_tenant_id))
-      || OB_FAIL(dml.add_pk_column("table_id", tmp_table_id))
+    if (OB_FAIL(dml.add_pk_column("table_id", tmp_table_id))
       || OB_FAIL(dml.add_pk_column("column_group_id", tmp_cg_id))
       || (!(is_history && is_deleted) && OB_FAIL(dml.add_column("column_group_name", column_group_schema.get_column_group_name().ptr())))
       || OB_FAIL(dml.add_column("column_group_type", column_group_schema.get_column_group_type()))
@@ -5610,8 +5871,7 @@ int ObTableSqlService::gen_column_group_mapping_dml(const ObTableSchema &table_s
     const uint64_t tmp_tenant_id = ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id);
     const uint64_t tmp_table_id = ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id);
     const uint64_t tmp_cg_id = ObSchemaUtils::get_extract_schema_id(exec_tenant_id, column_group_schema.get_column_group_id());
-    if (OB_FAIL(dml.add_pk_column("tenant_id", tmp_tenant_id))
-        || OB_FAIL(dml.add_pk_column("table_id", tmp_table_id))
+    if (OB_FAIL(dml.add_pk_column("table_id", tmp_table_id))
         || OB_FAIL(dml.add_pk_column("column_group_id", tmp_cg_id))
         || OB_FAIL(dml.add_pk_column("column_id", column_id))
         || (is_history && OB_FAIL(dml.add_column("is_deleted", is_deleted ? 1: 0)))
@@ -5667,9 +5927,7 @@ int ObTableSqlService::delete_from_column_group(ObISQLClient &sql_client,
         LOG_WARN("fail to drop all column group columns", K(ret), K(affect_rows), K(table_schema));
       }
     } else {
-      if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                               exec_tenant_id, table_schema.get_tenant_id())))
-          || OB_FAIL(dml.add_pk_column("table_id", table_schema.get_table_id()))) {
+      if (OB_FAIL(dml.add_pk_column("table_id", table_schema.get_table_id()))) {
         LOG_WARN("fail to gen dml to delete from __all_column_group", K(ret));
       } else if (OB_FAIL(exec.exec_delete(OB_ALL_COLUMN_GROUP_TNAME, dml, affect_rows))) {
         LOG_WARN("fail to insert deleted record to all column group history", K(ret));
@@ -5731,9 +5989,7 @@ int ObTableSqlService::delete_from_column_group_mapping(ObISQLClient &sql_client
         LOG_WARN("fail to drop in __all_column_group_mapping_history", K(ret), K(affect_rows), K(table_schema));
       }
     } else {
-      if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
-                                                 exec_tenant_id, table_schema.get_tenant_id())))
-          || OB_FAIL(dml.add_pk_column("table_id", table_schema.get_table_id()))) {
+      if (OB_FAIL(dml.add_pk_column("table_id", table_schema.get_table_id()))) {
         LOG_WARN("fail to gen dml to delete from __all_column_group", K(ret));
       } else if (OB_FAIL(exec.exec_delete(OB_ALL_COLUMN_GROUP_MAPPING_TNAME, dml, affect_rows))) {
         LOG_WARN("fail to insert deleted record to all column group", K(ret));
@@ -5987,8 +6243,7 @@ int ObTableSqlService::update_mock_fk_parent_table_schema_version(
   if (OB_FAIL(schema_service_.gen_new_schema_version(tenant_id, OB_INVALID_VERSION, new_schema_version))) {
     LOG_WARN("fail to gen new schema version", K(ret), K(tenant_id));
   } else if (FALSE_IT(mock_fk_parent_table_schema.set_schema_version(new_schema_version))) {
-  } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
+  } else if (OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
         || OB_FAIL(dml.add_column("schema_version", mock_fk_parent_table_schema.get_schema_version()))
         || OB_FAIL(dml.add_gmt_modified())) {
       LOG_WARN("add column failed", K(ret));
@@ -6203,8 +6458,7 @@ int ObTableSqlService::format_insert_mock_table_dml_sql(
   int ret = OB_SUCCESS;
   uint64_t tenant_id = mock_fk_parent_table_schema.get_tenant_id();
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-      || OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
+  if (OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
       || OB_FAIL(dml.add_column("database_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_database_id())))
       || OB_FAIL(dml.add_column("mock_fk_parent_table_name", mock_fk_parent_table_schema.get_mock_fk_parent_table_name()))
       || OB_FAIL(dml.add_column("schema_version", mock_fk_parent_table_schema.get_schema_version()))
@@ -6226,8 +6480,7 @@ int ObTableSqlService::format_delete_mock_table_dml_sql(
   const int64_t IS_DELETED = 1;
   ObDMLSqlSplicer dml;
   if (is_history) {
-    if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
+    if (OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
         || OB_FAIL(dml.add_column("database_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_database_id())))
         || OB_FAIL(dml.add_column("schema_version", mock_fk_parent_table_schema.get_schema_version()))
         || OB_FAIL(dml.add_gmt_modified())
@@ -6237,8 +6490,7 @@ int ObTableSqlService::format_delete_mock_table_dml_sql(
       LOG_WARN("splice_insert_sql failed", K(ret));
     }
   } else {
-    if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))) {
+    if (OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))) {
       LOG_WARN("add column failed", K(ret));
     } else if (OB_FAIL(dml.splice_delete_sql(OB_ALL_MOCK_FK_PARENT_TABLE_TNAME, delete_mock_table_dml_sql))) {
       LOG_WARN("splice_insert_sql failed", K(ret));
@@ -6257,8 +6509,7 @@ int ObTableSqlService::format_insert_mock_table_column_dml_sql(
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
   for (int64_t i = 0; OB_SUCC(ret) && i < mock_fk_parent_table_schema.get_column_array().count(); ++i) {
     ObDMLSqlSplicer dml;
-    if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
+    if (OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
         || OB_FAIL(dml.add_pk_column("parent_column_id", mock_fk_parent_table_schema.get_column_array().at(i).first))
         || OB_FAIL(dml.add_column("parent_column_name", mock_fk_parent_table_schema.get_column_array().at(i).second))
         || OB_FAIL(dml.add_column("schema_version", mock_fk_parent_table_schema.get_schema_version()))
@@ -6295,8 +6546,7 @@ int ObTableSqlService::format_delete_mock_table_column_dml_sql(
   if (is_history) {
     for (int64_t i = 0; OB_SUCC(ret) && i < mock_fk_parent_table_schema.get_column_array().count(); ++i) {
       ObDMLSqlSplicer dml;
-      if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-          || OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
+      if (OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))
           || OB_FAIL(dml.add_pk_column("parent_column_id", mock_fk_parent_table_schema.get_column_array().at(i).first))
           || OB_FAIL(dml.add_column("schema_version", mock_fk_parent_table_schema.get_schema_version()))
           || OB_FAIL(dml.add_gmt_modified())
@@ -6317,8 +6567,7 @@ int ObTableSqlService::format_delete_mock_table_column_dml_sql(
     }
   } else {
     ObDMLSqlSplicer dml;
-    if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id)))
-        || OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))) {
+    if (OB_FAIL(dml.add_pk_column("mock_fk_parent_table_id", ObSchemaUtils::get_extract_schema_id(exec_tenant_id, mock_fk_parent_table_schema.get_mock_fk_parent_table_id())))) {
       LOG_WARN("add column failed", K(ret));
     } else if (OB_FAIL(dml.splice_delete_sql(OB_ALL_MOCK_FK_PARENT_TABLE_COLUMN_TNAME, column_sql))) {
       LOG_WARN("splice_insert_sql failed", K(ret));

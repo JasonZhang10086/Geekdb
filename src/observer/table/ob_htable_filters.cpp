@@ -245,10 +245,21 @@ int RegexStringComparator::compare_to(const ObString &b)
 int SubStringComparator::compare_to(const ObString &b)
 {
   int cmp_ret = 0;
-#ifdef __APPLE__
-  // macOS doesn't have strndupa, use strndup instead (requires free)
+#if defined(__APPLE__) || defined(__ANDROID__)
   char *a_dup = strndup(comparator_value_.ptr(), comparator_value_.length());
   char *b_dup = strndup(b.ptr(), b.length());
+#elif defined(_WIN32)
+  auto strndup_fallback = [](const char *s, size_t n) -> char * {
+    if (!s) return nullptr;
+    size_t len = n;
+    char *p = static_cast<char *>(malloc(len + 1));
+    if (!p) return nullptr;
+    memcpy(p, s, len);
+    p[len] = '\0';
+    return p;
+  };
+  char *a_dup = strndup_fallback(comparator_value_.ptr(), comparator_value_.length());
+  char *b_dup = strndup_fallback(b.ptr(), b.length());
 #else
   char *a_dup = strndupa(comparator_value_.ptr(), comparator_value_.length());
   char *b_dup = strndupa(b.ptr(), b.length());
@@ -259,8 +270,7 @@ int SubStringComparator::compare_to(const ObString &b)
     char* p = strcasestr(b_dup, a_dup);
     cmp_ret = (NULL == p) ? 1: 0;
   }
-#ifdef __APPLE__
-  // Free memory allocated by strndup on macOS
+#if defined(__APPLE__) || defined(_WIN32) || defined(__ANDROID__)
   if (a_dup != NULL) {
     free(a_dup);
   }

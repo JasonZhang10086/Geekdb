@@ -17,7 +17,12 @@
 #ifndef OCEANBASE_SHARE_CONFIG_OB_CONFIG_HELPER_H_
 #define OCEANBASE_SHARE_CONFIG_OB_CONFIG_HELPER_H_
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
+#endif
 #include "lib/hash/ob_hashmap.h"
 #include "lib/hash_func/murmur_hash.h"
 #include "lib/hash/ob_hashutils.h"
@@ -35,6 +40,17 @@ namespace common
 class ObConfigItem;
 class ObConfigIntegralItem;
 class ObConfigAlwaysTrue;
+
+class ObConfigUpdateCb
+{
+public:
+  ObConfigUpdateCb() {}
+  virtual ~ObConfigUpdateCb() {}
+  virtual int64_t update_version() = 0;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigUpdateCb);
+};
 
 class ObConfigChecker
 {
@@ -820,14 +836,14 @@ public:
   ~ObConfigTimeParser() {}
   static int64_t get(const char *str, bool &valid);
 private:
-  enum TIME_UNIT
+  enum TIME_UNIT : int64_t
   {
-    TIME_MICROSECOND = 1UL,
-    TIME_MILLISECOND = 1000UL,
-    TIME_SECOND = 1000 * 1000UL,
-    TIME_MINUTE = 60 * 1000 * 1000UL,
-    TIME_HOUR = 60 * 60 * 1000 * 1000UL,
-    TIME_DAY = 24 * 60 * 60 * 1000 * 1000UL,
+    TIME_MICROSECOND = 1LL,
+    TIME_MILLISECOND = 1000LL,
+    TIME_SECOND = 1000LL * 1000,
+    TIME_MINUTE = 60LL * 1000 * 1000,
+    TIME_HOUR = 3600LL * 1000 * 1000,
+    TIME_DAY = 86400LL * 1000 * 1000,
   };
   DISALLOW_COPY_AND_ASSIGN(ObConfigTimeParser);
 };
@@ -997,12 +1013,12 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigKvGroupCommitRWModeChecker);
 };
 
-class ObConfigRegexpEngineChecker 
+class ObConfigRegexpEngineChecker
   : public ObConfigChecker
 {
 public:
-  ObConfigRegexpEngineChecker(){}
-  virtual ~ObConfigRegexpEngineChecker(){}
+  ObConfigRegexpEngineChecker() {}
+  virtual ~ObConfigRegexpEngineChecker() {}
   bool check(const ObConfigItem &t) const;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigRegexpEngineChecker);

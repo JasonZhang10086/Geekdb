@@ -412,8 +412,6 @@ int ObSchemaUtils::convert_sys_param_to_sysvar_schema(const ObSysParam &sysparam
     LOG_WARN("set sysvar schema max val failed", K(ret));
   } else if (OB_FAIL(sysvar_schema.set_info(ObString::make_string(sysparam.info_)))) {
     LOG_WARN("set sysvar schema info failed", K(ret));
-  } else if (OB_FAIL(sysvar_schema.set_zone(sysparam.zone_))) {
-    LOG_WARN("set sysvar schema zone failed", K(ret));
   } else {
     sysvar_schema.set_flags(sysparam.flags_);
     sysvar_schema.set_tenant_id(sysparam.tenant_id_);
@@ -503,7 +501,7 @@ int ObSchemaUtils::str_to_int(const ObString &str, int64_t &value)
       LOG_WARN("id_buf is not long enough", K(ret), K(n), LITERAL_K(OB_MAX_BIT_LENGTH));
     } else {
       const int64_t base = 10;
-      value = strtol(buf, NULL, base);
+      value = strtoll(buf, NULL, base);
     }
   }
   return ret;
@@ -760,6 +758,18 @@ int64_t ObSchemaUtils::get_inner_table_core_schema_version(ObIArray<ObTableSchem
   return core_schema_version;
 }
 
+int64_t ObSchemaUtils::get_inner_table_sys_schema_version(ObIArray<ObTableSchema> &tables)
+{
+  int64_t sys_schema_version = 0;
+  for (int64_t i = 0; i < tables.count(); i++) {
+    ObTableSchema &table = tables.at(i);
+    if (is_sys_table(table.get_table_id()) && table.get_schema_version() > sys_schema_version) {
+      sys_schema_version = table.get_schema_version();
+    }
+  }
+  return sys_schema_version;
+}
+
 int ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(
     const ObTimeoutCtx &ctx,
     sql::ObSQLSessionInfo *session,
@@ -771,9 +781,11 @@ int ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(
   int64_t start_time = ObTimeUtility::current_time();
   ObMultiVersionSchemaService *schema_service = NULL;
   int64_t consensus_timeout = 30 * 1000 * 1000L; // 30s
+  bool is_async = false;
   omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
   if (tenant_config.is_valid()) {
     consensus_timeout = tenant_config->_wait_interval_after_parallel_ddl;
+    is_async = (0 == tenant_config->_publish_schema_mode.case_compare(PUBLISH_SCHEMA_MODE_ASYNC));
   }
   if (OB_ISNULL(session) || OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id
       || schema_version <= 0
@@ -785,7 +797,7 @@ int ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(
     LOG_WARN("schema_service is null", KR(ret));
   }
   bool is_dropped = false;
-  while (OB_SUCC(ret) && ctx.get_timeout() > 0) {
+  while (OB_SUCC(ret) && ctx.get_timeout() > 0 && !is_async) {
     int64_t refreshed_schema_version = OB_INVALID_VERSION;
     int64_t consensus_schema_version = OB_INVALID_VERSION;
     if (OB_FAIL(schema_service->check_if_tenant_has_been_dropped(tenant_id, is_dropped))) {
@@ -1044,7 +1056,7 @@ int ObSchemaUtils::check_sys_table_exist_by_sql(
       common::sqlclient::ObMySQLResult *res = NULL;
       // in __all_table, tenant_id is primary key and it's value is 0
       if (OB_FAIL(sql.append_fmt(
-          "SELECT count(*) = 1 AS exist FROM %s WHERE tenant_id = 0 and table_id = %lu",
+          "SELECT count(*) = 1 AS exist FROM %s WHERE table_id = %lu",
           OB_ALL_TABLE_TNAME, table_id))) {
         LOG_WARN("fail to assign sql", KR(ret));
       } else if (OB_FAIL(sql_client.read(result, tenant_id, sql.ptr()))) {
@@ -1460,7 +1472,7 @@ int ObSchemaUtils::check_whether_column_exist(
       common::sqlclient::ObMySQLResult *res = NULL;
       // in __all_column, tenant_id is primary key and it's value is 0
       if (OB_FAIL(sql.append_fmt(
-          "SELECT count(*) = 1 AS exist FROM %s WHERE tenant_id = 0 and table_id = %lu and column_name = '%.*s'",
+          "SELECT count(*) = 1 AS exist FROM %s WHERE table_id = %lu and column_name = '%.*s'",
           OB_ALL_COLUMN_TNAME, table_id, column_name.length(), column_name.ptr()))) {
         LOG_WARN("fail to assign sql", KR(ret));
       } else if (OB_FAIL(GCTX.sql_proxy_->read(result, tenant_id, sql.ptr()))) {

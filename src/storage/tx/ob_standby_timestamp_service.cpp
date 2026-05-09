@@ -18,7 +18,9 @@
 #include "ob_timestamp_access.h"
 #include "logservice/ob_log_service.h"
 #include "observer/ob_srv_network_frame.h"
-#include "rootserver/ob_tenant_info_loader.h"
+#include "storage/tx_storage/ob_ls_service.h"
+#include "storage/ls/ob_ls.h"
+#include "lib/ob_running_mode.h"
 
 namespace oceanbase
 {
@@ -52,12 +54,16 @@ int ObStandbyTimestampService::init(rpc::frame::ObReqTransport *req_transport)
 int ObStandbyTimestampService::mtl_init(ObStandbyTimestampService *&sts)
 {
   int ret = OB_SUCCESS;
-  rpc::frame::ObReqTransport *req_transport = GCTX.net_frame_->get_req_transport();
-  if (OB_ISNULL(req_transport)) {
-    ret = OB_INVALID_ARGUMENT;
-    TRANS_LOG(WARN, "invalid argument", KP(req_transport));
+  if (lib::is_embed_mode()) {
+    TRANS_LOG(INFO, "ObStandbyTimestampService skip init in embed mode");
   } else {
-    ret = sts->init(req_transport);
+    rpc::frame::ObReqTransport *req_transport = GCTX.net_frame_->get_req_transport();
+    if (OB_ISNULL(req_transport)) {
+      ret = OB_INVALID_ARGUMENT;
+      TRANS_LOG(WARN, "invalid argument", KP(req_transport));
+    } else {
+      ret = sts->init(req_transport);
+    }
   }
   return ret;
 }
@@ -112,22 +118,34 @@ int ObStandbyTimestampService::query_and_update_last_id()
   int ret = OB_SUCCESS;
   SCN standby_scn;
   int64_t switch_to_leader_ts = ATOMIC_LOAD(&switch_to_leader_ts_);
-  int64_t query_ts = OB_INVALID_TIMESTAMP != switch_to_leader_ts ? switch_to_leader_ts : 0;
-  if (OB_FAIL(MTL(rootserver::ObTenantInfoLoader *)->get_valid_sts_after(query_ts, standby_scn))) {
-    if (print_error_log_interval_.reach()) {
-      TRANS_LOG(INFO, "tenant info is invalid", K(ret), K(query_ts), K(standby_scn), KPC(this));
-    }
-  } else if (!standby_scn.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    TRANS_LOG(WARN, "invalid argument", K(ret), K(query_ts), K(standby_scn), KPC(this));
+
+  storage::ObLSService *ls_service = MTL(storage::ObLSService *);
+  if (OB_ISNULL(ls_service)) {
+    ret = OB_ERR_UNEXPECTED;
+    TRANS_LOG(WARN, "ls service is null", K(ret), KPC(this));
   } else {
-    if (last_id_ > 0 && (standby_scn.get_val_for_gts() < last_id_)) {
-      TRANS_LOG(ERROR, "snapshot rolls back ", K_(switch_to_leader_ts), K(standby_scn), K_(last_id));
+    storage::ObLSHandle ls_handle;
+    if (OB_FAIL(ls_service->get_ls(share::GTS_LS, ls_handle, storage::ObLSGetMod::TRANS_MOD))) {
+      TRANS_LOG(INFO, "get ls failed", K(ret), KPC(this));
     } else {
-      inc_update(&last_id_, (int64_t)standby_scn.get_val_for_gts());
-      ATOMIC_BCAS(&switch_to_leader_ts_, switch_to_leader_ts, OB_INVALID_TIMESTAMP);
+      storage::ObLS *ls = ls_handle.get_ls();
+      if (OB_ISNULL(ls)) {
+        ret = OB_ERR_UNEXPECTED;
+        TRANS_LOG(WARN, "ls is null", K(ret), KPC(this));
+      } else {
+        standby_scn = ls->get_ls_wrs_handler()->get_ls_weak_read_ts();
+        if (standby_scn.is_valid()) {
+          if (last_id_ > 0 && (standby_scn.get_val_for_gts() < last_id_)) {
+            TRANS_LOG(ERROR, "snapshot rolls back ", K_(switch_to_leader_ts), K(standby_scn), K_(last_id));
+          } else {
+            inc_update(&last_id_, (int64_t)standby_scn.get_val_for_gts());
+            ATOMIC_BCAS(&switch_to_leader_ts_, switch_to_leader_ts, OB_INVALID_TIMESTAMP);
+          }
+        }
+      }
     }
   }
+
   if (print_id_log_interval_.reach()) {
     TRANS_LOG(INFO, "ObStandbyTimestampService state", K(*this));
   }
@@ -139,7 +157,8 @@ void ObStandbyTimestampService::run1()
   lib::set_thread_name("STSWorker");
   TRANS_LOG(INFO, "ObStandbyTimestampService thread start", K_(tenant_id));
   int ret = OB_SUCCESS;
-  while (is_user_tenant(tenant_id_) && !has_set_stop()) {
+  // In oceanbase-lite, we only have sys tenant, so always run
+  while (!has_set_stop()) {
     int64_t begin_tstamp = ObTimeUtility::current_time();
     if (OB_FAIL(query_and_update_last_id())) {
       TRANS_LOG(WARN, "query and update last id fail", KR(ret));
@@ -267,15 +286,7 @@ int ObStandbyTimestampService::handle_local_request_(const ObGtsRequest &request
 int ObStandbyTimestampService::get_number(int64_t &gts)
 {
   int ret = OB_SUCCESS;
-  bool leader = false;
-  if (OB_FAIL(check_leader(leader))) {
-    TRANS_LOG(WARN, "check leader fail", K(ret), KPC(this));
-  } else if (!leader) {
-    ret = OB_NOT_MASTER;
-    if (EXECUTE_COUNT_PER_SEC(10)) {
-      TRANS_LOG(WARN, "ObStandbyTimestampService is not leader", K(ret), KPC(this));
-    }
-  } else if (OB_INVALID_TIMESTAMP != ATOMIC_LOAD(&switch_to_leader_ts_)) {
+  if (OB_INVALID_TIMESTAMP != ATOMIC_LOAD(&switch_to_leader_ts_)) {
     ret = OB_GTS_NOT_READY;
     if (EXECUTE_COUNT_PER_SEC(10)) {
       TRANS_LOG(WARN, "ObStandbyTimestampService is not serving", K(ret), KPC(this));
@@ -292,21 +303,6 @@ int ObStandbyTimestampService::get_number(int64_t &gts)
   return ret;
 }
 
-int ObStandbyTimestampService::check_leader(bool &leader)
-{
-  int ret = OB_SUCCESS;
-  common::ObRole role;
-  int64_t tmp_epoch = OB_INVALID_TIMESTAMP;
-  if (OB_FAIL(MTL(logservice::ObLogService *)->get_palf_role(share::GTS_LS, role, tmp_epoch))) {
-    TRANS_LOG(WARN, "get ObStandbyTimestampService role fail", KR(ret));
-  } else if (role == LEADER && tmp_epoch == epoch_) {
-    leader = true;
-  } else {
-    leader = false;
-  }
-  return ret;
-}
-
 void ObStandbyTimestampService::get_virtual_info(int64_t &ts_value, common::ObRole &role, int64_t &proposal_id)
 {
   int ret = OB_SUCCESS;
@@ -318,7 +314,7 @@ void ObStandbyTimestampService::get_virtual_info(int64_t &ts_value, common::ObRo
     role = FOLLOWER;
     proposal_id = epoch_;
   }
-  TRANS_LOG(INFO, "sts get virtual info", K(ret), K_(last_id), K(ts_value), 
+  TRANS_LOG(INFO, "sts get virtual info", K(ret), K_(last_id), K(ts_value),
                   K(role), K(proposal_id), K_(epoch), K_(switch_to_leader_ts));
 }
 

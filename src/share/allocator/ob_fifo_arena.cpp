@@ -15,7 +15,7 @@
  */
 
 #define USING_LOG_PREFIX COMMON
-#ifdef OB_USE_ASAN
+#if defined(OB_USE_ASAN) || defined(_WIN32)
 #include "ob_fifo_arena.h"
 #include <malloc.h>
 #endif
@@ -36,7 +36,6 @@ int64_t ObFifoArena::Page::get_actual_hold_size()
 #ifdef OB_USE_ASAN
   return malloc_usable_size(this);
 #else
-  //every time of alloc_page, ruturn a chunk actually
   return ObTenantCtxAllocator::get_obj_hold(this);
 #endif
 }
@@ -117,7 +116,7 @@ void* ObFifoArena::alloc(int64_t adv_idx, Handle& handle, int64_t size)
   if (adv_idx < 0 || size < 0) {
     COMMON_LOG(INFO, "invalid argument", K(adv_idx), K(size));
     ret = OB_INVALID_ARGUMENT;
-  } else if (rsize > PAGE_SIZE) {
+  } else if (rsize > ALLOC_PAGE_SIZE) {
     Page* page = NULL;
     if (NULL == (page = alloc_page(rsize))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -145,7 +144,7 @@ void* ObFifoArena::alloc(int64_t adv_idx, Handle& handle, int64_t size)
       }
       if (NULL == page || need_switch) {
         Page* new_page = NULL;
-        int64_t alloc_size = PAGE_SIZE;
+        int64_t alloc_size = ALLOC_PAGE_SIZE;
         if (NULL != page) {
           retire_page(way_id, handle, page);
         }
